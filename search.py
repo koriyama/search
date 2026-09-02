@@ -71,7 +71,7 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – FIXED: no manual encoding
+# 2. SEARCH FUNCTION – correctly encoded, no double‑encoding
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200, 
@@ -81,13 +81,8 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
     cursor = "*"
     first_page_meta_count = None
 
-    # ---- IMPORTANT FIX: Do NOT manually encode the phrase ----
-    # We let requests do the encoding when we pass params.
-    # The filter value is: title_and_abstract.search:"exact phrase",publication_year:year
-    # We need to wrap the phrase in double quotes for exact-phrase matching.
-    
     filter_parts = [
-        f'title_and_abstract.search:"{phrase}"',  # <-- No manual encoding here
+        f'title_and_abstract.search:"{phrase}"',
         f'publication_year:{year}'
     ]
     if work_type and work_type != "All types":
@@ -106,10 +101,8 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
     if api_key:
         params["api_key"] = api_key
 
-    # Build debug URL (for display only)
     temp_params = dict(params)
     temp_params["cursor"] = "*"
-    # Use urlencode to build a readable URL for debugging
     debug_url = f"{OPENALEX_URL}?{urllib.parse.urlencode(temp_params)}"
 
     while cursor:
@@ -140,7 +133,7 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
     return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 3. COLLECT FUNCTION
+# 3. COLLECT FUNCTION – returns results_by_year
 # ============================================================
 
 def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_type=None, 
@@ -173,7 +166,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT ADAPTED TO BYTESIO
+# 4. EXPORT – now takes flat_rows (deduped globally)
 # ============================================================
 
 ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
@@ -183,7 +176,11 @@ def sanitize_for_excel(value):
         return ILLEGAL_CHARACTERS_RE.sub('', value)
     return value
 
-def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None, exclude_indices=None):
+def export_to_excel_bytes(flat_rows, phrases, years, out_bytes, email=None, exclude_indices=None):
+    """
+    flat_rows: list of (year, row) tuples – already deduplicated globally.
+    exclude_indices: set of indices (from the preview) to skip.
+    """
     if exclude_indices is None:
         exclude_indices = set()
     
@@ -194,13 +191,10 @@ def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None
     bold = Font(bold=True)
     missing_pdfs_rows = []
 
-    all_flat = []
-    for year in years:
-        for row in results_by_year.get(year, []):
-            all_flat.append((year, row))
-    
-    filtered_flat = [(year, row) for idx, (year, row) in enumerate(all_flat) if idx not in exclude_indices]
+    # Filter out excluded rows
+    filtered_flat = [(year, row) for idx, (year, row) in enumerate(flat_rows) if idx not in exclude_indices]
 
+    # Group by year for sheets
     filtered_by_year = {}
     for year, row in filtered_flat:
         if year not in filtered_by_year:
@@ -240,6 +234,7 @@ def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None
             ws.column_dimensions[get_column_letter(i)].width = w
         ws.freeze_panes = "A2"
 
+    # Settings sheet
     settings_ws = wb.create_sheet(title="Search Settings")
     settings_ws.cell(row=1, column=1, value="Setting").font = bold
     settings_ws.cell(row=1, column=2, value="Value").font = bold
@@ -256,6 +251,7 @@ def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None
     settings_ws.column_dimensions["A"].width = 30
     settings_ws.column_dimensions["B"].width = 60
 
+    # Missing PDFs sheet
     missing_ws = wb.create_sheet(title="Missing PDFs")
     for col_idx, h in enumerate(["Title", "Authors", "Year", "DOI"], start=1):
         missing_ws.cell(row=1, column=col_idx, value=h).font = bold
@@ -317,7 +313,8 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     
     **Search tips:**
     - Use **uppercase** `AND`, `OR`, `NOT` for boolean logic
-    - Each phrase is searched as an exact match in title and abstract
+    - Use **double quotes** for exact phrase matches (e.g., `"climate change"`)
+    - **Parentheses** group terms (e.g., `(neural OR deep)`)
     - Non‑ASCII characters (e.g., 守破離) are fully supported
     - You can filter results by document type using the dropdown below
     
@@ -326,24 +323,21 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     - If you are getting **0 results unexpectedly**, check the **"Force Refresh"** box below and search again.
     """)
 
-# ---- BOOLEAN EXAMPLES – now always visible below the search box ----
-st.markdown("""
-**Boolean search examples (use UPPERCASE operators):**
-- `"climate AND change"` → finds works containing **both** words
-- `"epistemic cognition OR personal epistemology"` → finds works containing **either** phrase
-- `"climate change NOT denial"` → finds works about climate change that **do not** mention denial
-- `"machine learning AND (neural OR deep)"` → more complex combinations work too
-
-Non‑ASCII characters (e.g., 守破離) work fine.
-""")
-
 with st.form("search_form"):
     col1, col2 = st.columns(2)
     with col1:
         phrases_input = st.text_area(
-            "🔍 Search Phrases (one per line)",
-            value="epistemic cognition\npersonal epistemology\nepistemological beliefs",
-            help="Enter one phrase per line. Use AND, OR, NOT (uppercase) for boolean logic."
+            "🔍 Search Phrases",
+            value=(
+                'climate AND change\n'
+                '"epistemic cognition" OR "personal epistemology" OR "epistemological beliefs"\n'
+                '"climate change" NOT denial\n'
+                '"machine learning" AND (neural OR deep)'
+            ),
+            help=(
+                "Each line is a separate query. Use uppercase AND, OR, NOT. "
+                "Put double quotes around exact phrases (e.g., \"climate change\")."
+            )
         )
         start_year = st.number_input("Start Year", min_value=1900, max_value=2030, value=2020, step=1)
         end_year = st.number_input("End Year", min_value=1900, max_value=2030, value=2026, step=1)
@@ -400,8 +394,19 @@ if submitted:
             work_type,
             refresh_seed
         )
-        total = sum(len(v) for v in results_by_year.values())
-        status.update(label=f"✅ Done! Found {total} unique records.", state="complete")
+        
+        # ---- FLATTEN AND DEDUPLICATE GLOBALLY ----
+        seen_keys = set()
+        flat_rows = []
+        for year, rows in results_by_year.items():
+            for r in rows:
+                key = r.get("id") or r.get("doi_url") or f"{r['title'].strip().lower()}|{r['year']}"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    flat_rows.append((year, r))
+        
+        total = len(flat_rows)
+        status.update(label=f"✅ Done! Found {total} unique records (after deduplication).", state="complete")
 
     if force_refresh:
         st.success("🔄 Cache bypassed! Results are freshly fetched from OpenAlex.")
@@ -427,10 +432,10 @@ if submitted:
     }
     st.session_state.search_history.append(search_record)
 
-    # ---- Build preview ----
-    all_rows = []
-    for year, rows in results_by_year.items():
-        for r in rows:
+    # ---- Build preview from flat_rows ----
+    if total > 0:
+        all_rows = []
+        for year, r in flat_rows:
             all_rows.append({
                 "Year": year,
                 "Title": r["title"],
@@ -439,18 +444,30 @@ if submitted:
                 "Has PDF": "✅" if r["pdf_url"] else "❌",
                 "Phrases": "; ".join(r.get("matched_phrases", []))
             })
-    
-    if all_rows:
         df = pd.DataFrame(all_rows)
 
         st.subheader("📄 Preview of Results")
         st.caption("Check the box next to any row you want to **exclude** from the final download.")
 
+        # ---- Add Exclude column ----
         df_with_checkboxes = df.copy()
         df_with_checkboxes.insert(0, "Exclude", False)
 
+        # ---- Manage session state for the editor ----
+        # If the number of rows changed (new search), reset the editor state
+        if "df_editor" not in st.session_state or len(st.session_state.df_editor) != len(df_with_checkboxes):
+            st.session_state.df_editor = df_with_checkboxes
+
+        # ---- Bulk action buttons ----
+        colA, colB, colC = st.columns([1, 1, 3])
+        if colA.button("✖️ Exclude All"):
+            st.session_state.df_editor["Exclude"] = True
+        if colB.button("✅ Include All"):
+            st.session_state.df_editor["Exclude"] = False
+
+        # ---- Data editor ----
         edited_df = st.data_editor(
-            df_with_checkboxes,
+            st.session_state.df_editor,
             use_container_width=True,
             height=400,
             column_config={
@@ -465,6 +482,10 @@ if submitted:
             hide_index=True,
         )
 
+        # ---- Update session state with manual edits ----
+        st.session_state.df_editor = edited_df
+
+        # ---- Calculate excluded indices ----
         excluded_indices = set()
         for idx, row in edited_df.iterrows():
             if row["Exclude"]:
@@ -475,11 +496,12 @@ if submitted:
         if excluded_indices:
             st.info(f"🚫 {len(excluded_indices)} row(s) marked for exclusion from the download.")
 
+        # ---- Export button ----
         if st.button("⬇️ Download Excel File", use_container_width=True):
             with st.spinner("Generating Excel..."):
                 output = BytesIO()
                 export_to_excel_bytes(
-                    results_by_year, 
+                    flat_rows,        # pass the deduped flat list
                     phrases, 
                     years, 
                     output, 
