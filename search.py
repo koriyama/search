@@ -71,7 +71,7 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – no prepaid parameter
+# 2. SEARCH FUNCTION – unchanged
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200, 
@@ -535,7 +535,7 @@ if st.session_state.results_available:
                 "Title": r["title"],
                 "Authors": r["authors"],
                 "Journal": r["journal"],
-                "Abstract": r["abstract"],          # Abstract placed after Journal
+                "Abstract": r["abstract"],          # Abstract now after Journal
                 "Has PDF": "✅" if r["pdf_url"] else "❌",
                 "Phrases": "; ".join(r.get("matched_phrases", []))
             })
@@ -570,15 +570,17 @@ if st.session_state.results_available:
                 "Journal": st.column_config.TextColumn("Journal", width="medium"),
                 "Abstract": st.column_config.TextColumn(
                     "Abstract", 
-                    width="extra large",
-                    disabled=True   # prevents accidental editing / fill‑down
+                    width="large",          # large enough to show a preview
+                    disabled=True           # prevents accidental editing and fill‑down
                 ),
                 "Has PDF": st.column_config.TextColumn("PDF", width="small"),
                 "Phrases": st.column_config.TextColumn("Matched Phrases", width="medium"),
             },
             hide_index=True,
-            # Optional: reorder columns by specifying the order in the dataframe
         )
+
+        # 👇 NEW: friendly tip about double‑click
+        st.caption("💡 **Tip:** Double‑click any cell (especially the **Abstract** column) to expand it and view the full content.")
 
         # Update session state with manual edits
         st.session_state.df_editor = edited_df
