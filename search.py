@@ -589,7 +589,7 @@ if st.session_state.results_available:
             column_config={
                 "Exclude": st.column_config.CheckboxColumn(
                     "Exclude", 
-                    width="small",
+                    width=80,
                     help="Check to exclude this row from export"
                 ),
                 "Year": st.column_config.NumberColumn("Year", width="small"),
