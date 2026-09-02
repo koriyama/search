@@ -325,13 +325,67 @@ def get_total_count(phrases, years, email, api_key, work_types, fetch_fn):
 # 6. STREAMLIT UI
 # ============================================================
 
-st.set_page_config(page_title="Literature Search", layout="wide")
+st.set_page_config(page_title="Search", layout="wide")
 
 st.markdown(
     """
     <style>
+    /* Tighten overall page padding */
     .block-container {
-        padding-top: 1.5rem;
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+        max-width: 1200px;
+    }
+
+    /* Reduce the default gap Streamlit puts between stacked widgets */
+    [data-testid="stVerticalBlock"] > div {
+        gap: 0.5rem;
+    }
+
+    /* Title: smaller, tighter, no excess margin below */
+    h1 {
+        font-size: 1.9rem !important;
+        font-weight: 700 !important;
+        margin-bottom: 0.2rem !important;
+        letter-spacing: -0.01em;
+    }
+
+    /* Subtitle text under the title */
+    .stMarkdown p {
+        color: #4b5563;
+        font-size: 0.95rem;
+    }
+
+    /* Flat, modern buttons */
+    .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+        border-radius: 8px;
+        border: 1px solid #e2e2e2;
+        font-weight: 500;
+        transition: all 0.15s ease;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover {
+        border-color: #999;
+        transform: translateY(-1px);
+    }
+
+    /* Cleaner expander cards */
+    [data-testid="stExpander"] {
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background-color: #fafafa;
+    }
+
+    /* Form container: subtle card look */
+    [data-testid="stForm"] {
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 1.2rem 1.2rem 0.4rem 1.2rem;
+        background-color: #ffffff;
+    }
+
+    /* Tighten caption spacing */
+    .stCaption {
+        margin-top: -0.4rem;
     }
     </style>
     """,
