@@ -291,16 +291,25 @@ def get_total_count(phrases, years, email, api_key, work_type, fetch_fn):
 
 st.set_page_config(page_title="Literature Search", layout="wide")
 
-# ---- Reduce header spacing and add CSS tweaks ----
+# ---- Load API key ----
+api_key = st.secrets.get("OPENALEX_API_KEY")
+
+if not api_key:
+    st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
+    st.stop()
+
+# ---- Custom CSS: reduce header spacing and button gaps ----
 st.markdown("""
 <style>
-    .main-header {
-        margin-top: -30px;
+    /* Reduce the top margin of the main title */
+    .main-header h1 {
+        margin-top: -20px;
     }
-    .stButton button {
-        width: 100%;
+    /* Tighten the top padding of the main container */
+    .block-container {
+        padding-top: 1rem;
     }
-    /* Reduce button spacing in columns */
+    /* Reduce spacing between the two buttons */
     div[data-testid="column"]:nth-child(1) {
         padding-right: 2px;
     }
@@ -310,7 +319,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📚 Literature Search")
+# ---- Title with reduced spacing ----
+st.markdown("<h1 class='main-header'>📚 Literature Search</h1>", unsafe_allow_html=True)
 
 # ---- Brief app summary ----
 st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals, and PDF links are all included.")
@@ -458,7 +468,7 @@ if submitted:
                 st.session_state.phrases,
                 st.session_state.years,
                 email,
-                api_key,
+                api_key,          # now defined
                 work_type,
                 search_openalex_phrase_year
             )
@@ -579,7 +589,7 @@ if st.session_state.results_available:
             column_config={
                 "Exclude": st.column_config.CheckboxColumn(
                     "Exclude", 
-                    width="small",           # narrow column
+                    width="small",
                     help="Check to exclude this row from export"
                 ),
                 "Year": st.column_config.NumberColumn("Year", width="small"),
@@ -589,7 +599,7 @@ if st.session_state.results_available:
                 "Abstract": st.column_config.TextColumn(
                     "Abstract (double click to expand)", 
                     width="large",
-                    disabled=True           # prevents accidental editing and fill‑down
+                    disabled=True
                 ),
                 "Has PDF": st.column_config.TextColumn("PDF", width="small"),
                 "Phrases": st.column_config.TextColumn("Matched Phrases", width="medium"),
