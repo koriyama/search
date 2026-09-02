@@ -533,6 +533,7 @@ if st.session_state.results_available:
             all_rows.append({
                 "Year": year,
                 "Title": r["title"],
+                "Abstract": r["abstract"],          # <-- NEW: include abstract
                 "Authors": r["authors"],
                 "Journal": r["journal"],
                 "Has PDF": "✅" if r["pdf_url"] else "❌",
@@ -564,6 +565,7 @@ if st.session_state.results_available:
             column_config={
                 "Exclude": st.column_config.CheckboxColumn("Exclude", help="Check to exclude this row from export"),
                 "Title": st.column_config.TextColumn("Title", width="large"),
+                "Abstract": st.column_config.TextColumn("Abstract", width="extra large"),  # <-- NEW
                 "Authors": st.column_config.TextColumn("Authors", width="medium"),
                 "Journal": st.column_config.TextColumn("Journal", width="medium"),
                 "Year": st.column_config.NumberColumn("Year", width="small"),
