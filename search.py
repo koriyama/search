@@ -325,14 +325,14 @@ def get_total_count(phrases, years, email, api_key, work_types, fetch_fn):
 # 6. STREAMLIT UI
 # ============================================================
 
-st.set_page_config(page_title="Literature Search", layout="wide")
+st.set_page_config(page_title="LitFind", layout="wide")
 
 api_key = st.secrets.get("OPENALEX_API_KEY")
 if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
-st.title("📚 Literature Search")
+st.title("📚 LitFind")
 st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals and PDF links are all included.")
 
 with st.expander("ℹ️ About this search tool", expanded=False):
