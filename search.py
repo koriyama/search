@@ -178,11 +178,10 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT – now exports only included rows from merged set
+# 4. EXPORT – exports the merged set (list of (year, row))
 # ============================================================
 
-def export_to_excel_bytes(flat_rows, phrases, years, out_bytes, email=None):
-    # flat_rows here is the merged set (list of (year, row))
+def export_to_excel_bytes(merged_rows, all_phrases, all_years, out_bytes, email=None):
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -190,14 +189,13 @@ def export_to_excel_bytes(flat_rows, phrases, years, out_bytes, email=None):
     bold = Font(bold=True)
     missing_pdfs_rows = []
 
-    # group by year (preserve order)
     by_year = {}
-    for year, row in flat_rows:
+    for year, row in merged_rows:
         if year not in by_year:
             by_year[year] = []
         by_year[year].append(row)
 
-    for year in years:
+    for year in all_years:
         ws = wb.create_sheet(title=str(year))
         for col_idx, h in enumerate(header, start=1):
             ws.cell(row=1, column=col_idx, value=h).font = bold
@@ -230,24 +228,24 @@ def export_to_excel_bytes(flat_rows, phrases, years, out_bytes, email=None):
             ws.column_dimensions[get_column_letter(i)].width = w
         ws.freeze_panes = "A2"
 
-    # Settings sheet (optional, but kept)
+    # Settings sheet
     settings_ws = wb.create_sheet(title="Search Settings")
     settings_ws.cell(row=1, column=1, value="Setting").font = bold
     settings_ws.cell(row=1, column=2, value="Value").font = bold
     settings_ws.cell(row=2, column=1, value="Exact phrases searched")
-    settings_ws.cell(row=2, column=2, value="; ".join(phrases))
+    settings_ws.cell(row=2, column=2, value="; ".join(all_phrases))
     settings_ws.cell(row=3, column=1, value="Publication years")
-    settings_ws.cell(row=3, column=2, value=", ".join(str(y) for y in years))
+    settings_ws.cell(row=3, column=2, value=", ".join(str(y) for y in all_years))
     settings_ws.cell(row=4, column=1, value="OpenAlex email (polite pool)")
     settings_ws.cell(row=4, column=2, value=email or "Not provided")
     settings_ws.cell(row=5, column=1, value="API Key used")
     settings_ws.cell(row=5, column=2, value="Yes (server-side)" if st.secrets.get("OPENALEX_API_KEY") else "No")
     settings_ws.cell(row=6, column=1, value="Total included records")
-    settings_ws.cell(row=6, column=2, value=len(flat_rows))
+    settings_ws.cell(row=6, column=2, value=len(merged_rows))
     settings_ws.column_dimensions["A"].width = 30
     settings_ws.column_dimensions["B"].width = 60
 
-    # Missing PDFs sheet
+    # Missing PDFs
     missing_ws = wb.create_sheet(title="Missing PDFs")
     for col_idx, h in enumerate(["Title", "Authors", "Year", "DOI"], start=1):
         missing_ws.cell(row=1, column=col_idx, value=h).font = bold
@@ -296,7 +294,7 @@ if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
-# ---- Title and info ----
+# ---- Title and full About text ----
 st.title("📚 Literature Search")
 st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals and PDF links are all included.")
 
@@ -304,10 +302,33 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     st.markdown("""
     This tool searches **OpenAlex** – a free, open index of the world's research ecosystem.
     
-    - **Sessions**: each search is saved separately.  
-    - **Include rows**: for each session, tick the rows you want to keep.  
-    - **Merged set**: the union of all included rows across all sessions is used for download.  
-    - Newest sessions appear at the top.
+    **What does OpenAlex cover?**
+    - Over **320 million scholarly works**: journal articles, conference papers, books, book chapters, datasets, dissertations, preprints, and more
+    - **Extra coverage** of humanities, non‑English languages, and the Global South
+    - Data from **Crossref, PubMed, arXiv, HAL, DOAJ, ORCID, institutional repositories**, and many other sources
+    - **60 million open access PDFs** parsed directly
+    
+    **Why OpenAlex?**
+    - It is **free and open** – no paywalls, no API keys required (though providing your email gives you faster "polite pool" access)
+    - It is **more comprehensive** than Scopus or Web of Science, with over 464 million works indexed
+    - It includes **datasets, software, and other research objects** beyond just traditional publications
+    
+    **Search tips:**
+    - Use **uppercase** `AND`, `OR`, `NOT` for boolean logic
+    - Use **double quotes** for exact phrase matches (e.g., `"climate change"`)
+    - **Parentheses** group terms (e.g., `(neural OR deep)`)
+    - Non‑ASCII characters (e.g., 守破離) are fully supported
+    - You can filter results by document type using the dropdown below
+    
+    ⚠️ **Cache & Rate limits:** 
+    - The app caches results to speed up repeated searches. 
+    - If you are getting **0 results unexpectedly**, check the **"Force Refresh"** box below and search again.
+    
+    🛡️ **Pre‑flight check:** The app first counts how many works match your search. If the count exceeds 2000, it warns you to narrow your search to avoid excessive API calls. You can still force a full fetch if needed.
+    
+    ℹ️ **Session‑only storage**: Your email and search history are stored **only in your current browser session**. If you close this tab or refresh the page, they will be cleared. No data is stored on any server or shared with anyone.
+    
+    🔄 **How selection works**: Each session has its own preview table with **Include** checkboxes. After marking rows, click the **"Apply to Merged Set"** button below all tables. This collects all included rows from all sessions, removes duplicates, and builds a merged set for export. You can later refine any session's selections and re‑apply.
     """)
 
 # ---- Session state ----
@@ -315,12 +336,12 @@ if "email" not in st.session_state:
     st.session_state.email = ""
 if "search_sessions" not in st.session_state:
     st.session_state.search_sessions = []  # each: {id, phrases, years, work_types, flat_rows, total, timestamp, included_indices: set()}
-if "current_session_index" not in st.session_state:
-    st.session_state.current_session_index = None
 if "do_full_fetch" not in st.session_state:
     st.session_state.do_full_fetch = False
 if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
+if "merged_rows" not in st.session_state:
+    st.session_state.merged_rows = []  # list of (year, row) – the merged set
 
 # ---- FORM ----
 with st.form("search_form"):
@@ -396,7 +417,7 @@ if submitted:
         st.session_state.do_full_fetch = True
         st.rerun()
 
-# ---- Fetch and create new session ----
+# ---- Fetch and create new session (insert at beginning) ----
 if st.session_state.do_full_fetch:
     phrases = st.session_state.phrases
     years = st.session_state.years
@@ -435,25 +456,23 @@ if st.session_state.do_full_fetch:
         "included_indices": set()  # empty by default
     }
     st.session_state.search_sessions.insert(0, new_session)
-    st.session_state.current_session_index = 0
     st.session_state.do_full_fetch = False
     st.rerun()
 
-# ---- Display current session preview (ABOVE session management) ----
+# ---- Display all sessions' preview tables (stacked) ----
 if st.session_state.search_sessions:
-    current_idx = st.session_state.current_session_index
-    if current_idx is None or current_idx >= len(st.session_state.search_sessions):
-        current_idx = 0
-        st.session_state.current_session_index = 0
-    session = st.session_state.search_sessions[current_idx]
-    flat_rows = session["flat_rows"]
-    total = session["total"]
-    phrases = session["phrases"]
-    years = session["years"]
-    included_indices = session.get("included_indices", set())
+    st.subheader("📋 All Search Sessions (newest first)")
+    st.caption("For each session, tick the rows you want to include. Then click the **Apply** button at the bottom to build the merged set.")
 
-    # ---- Preview of current session ----
-    if total > 0:
+    # We'll store the edited dataframes in session state per session ID
+    for idx, sess in enumerate(st.session_state.search_sessions):
+        flat_rows = sess["flat_rows"]
+        total = sess["total"]
+        if total == 0:
+            continue
+        included_indices = sess.get("included_indices", set())
+
+        # Build the dataframe with Include checkbox
         all_rows = []
         for i, (year, r) in enumerate(flat_rows):
             all_rows.append({
@@ -468,211 +487,97 @@ if st.session_state.search_sessions:
             })
         df = pd.DataFrame(all_rows)
 
-        st.subheader(f"📄 Current Session – {phrases[0]} ({total} hits)")
-        st.caption("Tick the **Include** box for rows you want to keep. Included rows from all sessions will be merged for download.")
+        # Use a key per session
+        editor_key = f"include_editor_{sess['id']}"
+        if f"df_{sess['id']}" not in st.session_state:
+            st.session_state[f"df_{sess['id']}"] = df
 
-        # Data editor with "Include" checkbox
-        df_with_include = df.copy()
-        editor_key = f"include_editor_{session['id']}"
-
-        # Store the edited df in session state
-        if f"include_df_{session['id']}" not in st.session_state:
-            st.session_state[f"include_df_{session['id']}"] = df_with_include
-
-        edited_df = st.data_editor(
-            st.session_state[f"include_df_{session['id']}"],
-            use_container_width=True,
-            height=400,
-            column_config={
-                "Include": st.column_config.CheckboxColumn(
-                    "Include", 
-                    width=80,
-                    help="Check to include this row in the merged set"
-                ),
-                "Year": st.column_config.NumberColumn("Year", width="small"),
-                "Title": st.column_config.TextColumn("Title", width="large"),
-                "Authors": st.column_config.TextColumn("Authors", width="medium"),
-                "Journal": st.column_config.TextColumn("Journal", width="medium"),
-                "Abstract": st.column_config.TextColumn(
-                    "Abstract (double click to expand)", 
-                    width="large",
-                    disabled=False
-                ),
-                "Has PDF": st.column_config.TextColumn("PDF", width="small"),
-                "Phrases": st.column_config.TextColumn("Matched Phrases", width="medium"),
-            },
-            hide_index=True,
-            key=editor_key
-        )
-
-        # Update included_indices from the edited_df
-        new_included = set()
-        for idx, row in edited_df.iterrows():
-            if row["Include"]:
-                new_included.add(idx)
-        session["included_indices"] = new_included
-        st.session_state[f"include_df_{session['id']}"] = edited_df
-
-        # Show count of included rows
-        st.caption(f"✅ {len(new_included)} row(s) included from this session.")
-
-        # ---- Quick actions for this session ----
-        colA, colB = st.columns([1, 1])
-        if colA.button("✅ Include All", use_container_width=True, key=f"include_all_{session['id']}"):
-            for idx in range(len(edited_df)):
-                edited_df.at[idx, "Include"] = True
-            session["included_indices"] = set(range(len(edited_df)))
-            st.session_state[f"include_df_{session['id']}"] = edited_df
-            st.rerun()
-        if colB.button("❌ Include None", use_container_width=True, key=f"include_none_{session['id']}"):
-            for idx in range(len(edited_df)):
-                edited_df.at[idx, "Include"] = False
-            session["included_indices"] = set()
-            st.session_state[f"include_df_{session['id']}"] = edited_df
-            st.rerun()
-
-    else:
-        st.info("This session has no results.")
-
-    # ---- Session management (below the preview) ----
-    with st.expander("📋 Manage Sessions", expanded=False):
-        st.write("All your search sessions. Newest first.")
-
-        session_data = []
-        for idx, sess in enumerate(st.session_state.search_sessions):
-            included_count = len(sess.get("included_indices", set()))
-            session_data.append({
-                "Select": False,
-                "ID": sess["id"][:8],
-                "Phrases": "; ".join(sess["phrases"])[:60],
-                "Years": f"{sess['years'][0]}-{sess['years'][-1]}",
-                "Total": sess["total"],
-                "Included": included_count,
-                "Timestamp": sess["timestamp"]
-            })
-        df_sessions = pd.DataFrame(session_data)
-
-        edited_sessions = st.data_editor(
-            df_sessions,
-            column_config={
-                "Select": st.column_config.CheckboxColumn("Select for merge", default=False),
-                "ID": st.column_config.TextColumn("ID", width="small"),
-                "Phrases": st.column_config.TextColumn("Phrases", width="large"),
-                "Years": st.column_config.TextColumn("Years", width="small"),
-                "Total": st.column_config.NumberColumn("Total", width="small"),
-                "Included": st.column_config.NumberColumn("Included", width="small"),
-                "Timestamp": st.column_config.TextColumn("Timestamp", width="medium"),
-            },
-            hide_index=True,
-            use_container_width=True,
-            height=200,
-            disabled=["ID", "Phrases", "Years", "Total", "Included", "Timestamp"],
-            key="session_manager"
-        )
-
-        col_merge, col_delete, col_clear = st.columns([1, 1, 1])
-        with col_merge:
-            if st.button("🔄 Merge Selected (keep included rows)", use_container_width=True):
-                selected_indices = [idx for idx, row in edited_sessions.iterrows() if row["Select"]]
-                if len(selected_indices) < 2:
-                    st.warning("Select at least two sessions to merge.")
-                else:
-                    # Collect all included rows from selected sessions
-                    merged_rows = []
-                    for idx in selected_indices:
-                        sess = st.session_state.search_sessions[idx]
-                        included = sess.get("included_indices", set())
-                        for row_idx in included:
-                            if row_idx < len(sess["flat_rows"]):
-                                merged_rows.append(sess["flat_rows"][row_idx])
-                    # Deduplicate (by id/doi/title+year)
-                    seen = set()
-                    unique_merged = []
-                    for year, r in merged_rows:
-                        key = r.get("id") or r.get("doi_url") or f"{r['title'].strip().lower()}|{r['year']}"
-                        if key not in seen:
-                            seen.add(key)
-                            unique_merged.append((year, r))
-                    # Create new session
-                    combined_phrases = []
-                    for idx in selected_indices:
-                        combined_phrases.extend(st.session_state.search_sessions[idx]["phrases"])
-                    combined_phrases = list(dict.fromkeys(combined_phrases))
-                    new_session = {
-                        "id": datetime.now().strftime("%Y%m%d_%H%M%S"),
-                        "phrases": combined_phrases,
-                        "years": st.session_state.search_sessions[selected_indices[0]]["years"],
-                        "work_types": st.session_state.search_sessions[selected_indices[0]]["work_types"],
-                        "flat_rows": unique_merged,
-                        "total": len(unique_merged),
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "included_indices": set(range(len(unique_merged)))  # all included by default
-                    }
-                    st.session_state.search_sessions.insert(0, new_session)
-                    st.session_state.current_session_index = 0
-                    st.rerun()
-
-        with col_delete:
-            if st.button("🗑️ Delete Selected", use_container_width=True):
-                selected_indices = [idx for idx, row in edited_sessions.iterrows() if row["Select"]]
-                if not selected_indices:
-                    st.warning("Select at least one session to delete.")
-                else:
-                    for idx in sorted(selected_indices, reverse=True):
-                        del st.session_state.search_sessions[idx]
-                    if st.session_state.current_session_index in selected_indices or st.session_state.current_session_index is None:
-                        st.session_state.current_session_index = 0 if st.session_state.search_sessions else None
-                    st.rerun()
-
-        with col_clear:
-            if st.button("🧹 Clear All", use_container_width=True):
-                st.session_state.search_sessions = []
-                st.session_state.current_session_index = None
+        with st.expander(f"Session {idx+1}: {sess['phrases'][0][:60]}… ({total} records, {len(included_indices)} included)", expanded=(idx==0)):
+            # Show include buttons per session
+            colA, colB = st.columns([1, 1])
+            if colA.button(f"✅ Include All", key=f"include_all_{sess['id']}"):
+                # Update the stored df
+                df_local = st.session_state[f"df_{sess['id']}"].copy()
+                df_local["Include"] = True
+                st.session_state[f"df_{sess['id']}"] = df_local
+                st.rerun()
+            if colB.button(f"❌ Include None", key=f"include_none_{sess['id']}"):
+                df_local = st.session_state[f"df_{sess['id']}"].copy()
+                df_local["Include"] = False
+                st.session_state[f"df_{sess['id']}"] = df_local
                 st.rerun()
 
-        # Switch to another session
-        session_options = [f"{sess['id'][:8]} – {sess['phrases'][0][:40]}… (included: {len(sess.get('included_indices', set()))}/{sess['total']})" for sess in st.session_state.search_sessions]
-        if session_options:
-            current_idx = st.session_state.current_session_index if st.session_state.current_session_index is not None else 0
-            selected_idx = st.selectbox(
-                "Switch to session:",
-                options=range(len(session_options)),
-                index=min(current_idx, len(session_options)-1),
-                format_func=lambda i: session_options[i],
-                key="session_switch"
+            # Data editor with Include checkbox
+            edited_df = st.data_editor(
+                st.session_state[f"df_{sess['id']}"],
+                use_container_width=True,
+                height=400,
+                column_config={
+                    "Include": st.column_config.CheckboxColumn(
+                        "Include", 
+                        width=80,
+                        help="Check to include this row in the merged set"
+                    ),
+                    "Year": st.column_config.NumberColumn("Year", width="small"),
+                    "Title": st.column_config.TextColumn("Title", width="large"),
+                    "Authors": st.column_config.TextColumn("Authors", width="medium"),
+                    "Journal": st.column_config.TextColumn("Journal", width="medium"),
+                    "Abstract": st.column_config.TextColumn(
+                        "Abstract (double click to expand)", 
+                        width="large",
+                        disabled=False
+                    ),
+                    "Has PDF": st.column_config.TextColumn("PDF", width="small"),
+                    "Phrases": st.column_config.TextColumn("Matched Phrases", width="medium"),
+                },
+                hide_index=True,
+                key=editor_key
             )
-            if selected_idx != st.session_state.current_session_index:
-                st.session_state.current_session_index = selected_idx
-                st.rerun()
+            # Update session's included_indices from edited_df
+            new_included = set()
+            for row_idx, row in edited_df.iterrows():
+                if row["Include"]:
+                    new_included.add(row_idx)
+            sess["included_indices"] = new_included
+            # Save the edited df back to session state
+            st.session_state[f"df_{sess['id']}"] = edited_df
 
-    # ---- Show merged set and download ----
-    # Compute merged rows from all sessions' included indices
-    all_included = []
-    for sess in st.session_state.search_sessions:
-        included = sess.get("included_indices", set())
-        for idx in included:
-            if idx < len(sess["flat_rows"]):
-                all_included.append(sess["flat_rows"][idx])
-    # Deduplicate globally
-    seen = set()
-    merged_rows = []
-    for year, r in all_included:
-        key = r.get("id") or r.get("doi_url") or f"{r['title'].strip().lower()}|{r['year']}"
-        if key not in seen:
-            seen.add(key)
-            merged_rows.append((year, r))
+            st.caption(f"📌 {len(new_included)} rows included from this session.")
 
+    # ---- Apply button and merged set ----
     st.markdown("---")
-    st.subheader(f"📦 Merged Set – {len(merged_rows)} unique included records across all sessions")
+    if st.button("🔄 Apply Selected Records to Merged Set", use_container_width=True):
+        # Collect all included rows from all sessions
+        all_included = []
+        for sess in st.session_state.search_sessions:
+            included = sess.get("included_indices", set())
+            for row_idx in included:
+                if row_idx < len(sess["flat_rows"]):
+                    all_included.append(sess["flat_rows"][row_idx])
+        # Deduplicate
+        seen = set()
+        merged = []
+        for year, r in all_included:
+            key = r.get("id") or r.get("doi_url") or f"{r['title'].strip().lower()}|{r['year']}"
+            if key not in seen:
+                seen.add(key)
+                merged.append((year, r))
+        st.session_state.merged_rows = merged
+        st.success(f"✅ Merged set updated: {len(merged)} unique records.")
+        st.rerun()
 
-    if len(merged_rows) > 0:
-        st.caption("This is the union of all rows you marked 'Include' in any session. Download this set below.")
-        # Show a quick preview of merged rows (optional)
+    # ---- Display merged set ----
+    if st.session_state.merged_rows:
+        merged_rows = st.session_state.merged_rows
+        st.subheader(f"📦 Merged Set – {len(merged_rows)} unique included records")
+        st.caption("This is the union of all rows you marked 'Include' across all sessions. Download this set below.")
+
+        # Quick preview of merged
         with st.expander("Preview merged records", expanded=False):
             merged_df = pd.DataFrame([{"Year": y, "Title": r["title"]} for y, r in merged_rows])
             st.dataframe(merged_df, use_container_width=True, height=200)
 
-        # Download button for merged set
+        # Download button
         col_name, col_btn = st.columns([2, 1])
         with col_name:
             default_filename = f"{datetime.now().strftime('%Y-%m-%d')}_merged_{len(merged_rows)}_records.xlsx"
@@ -687,17 +592,15 @@ if st.session_state.search_sessions:
             st.write("")
             if st.button("⬇️ Download Merged Excel", use_container_width=True, key="download_merged"):
                 with st.spinner("Generating Excel..."):
-                    output = BytesIO()
-                    # Pass the merged_rows and a combined phrases list
+                    # Gather all phrases and years from all sessions
                     all_phrases = []
-                    for sess in st.session_state.search_sessions:
-                        all_phrases.extend(sess["phrases"])
-                    all_phrases = list(dict.fromkeys(all_phrases))
-                    # Use years from first session (or merge years)
                     all_years = []
                     for sess in st.session_state.search_sessions:
+                        all_phrases.extend(sess["phrases"])
                         all_years.extend(sess["years"])
+                    all_phrases = list(dict.fromkeys(all_phrases))
                     all_years = sorted(set(all_years))
+                    output = BytesIO()
                     export_to_excel_bytes(
                         merged_rows,
                         all_phrases,
@@ -715,7 +618,7 @@ if st.session_state.search_sessions:
                         key="merged_download_btn"
                     )
     else:
-        st.info("No rows included yet. Tick the 'Include' boxes in the session preview to add records to the merged set.")
+        st.info("No records in merged set yet. Mark rows as 'Include' in any session and click Apply.")
 
 else:
     st.info("No searches yet. Fill in the form above and click 'Run Search'.")
