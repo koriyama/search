@@ -397,7 +397,15 @@ if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
-st.title("Search")
+st.markdown(
+    """
+    <div style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.2rem;">
+        <div style="width: 5px; height: 1.9rem; background-color: #2563eb; border-radius: 2px;"></div>
+        <h1 style="margin: 0; padding: 0;">Search</h1>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals and PDF links are all included.")
 
 with st.expander("ℹ️ About this search tool", expanded=False):
