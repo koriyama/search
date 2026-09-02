@@ -9,6 +9,7 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 import re
 import random
+from datetime import datetime
 
 # ============================================================
 # 1. CORE FUNCTIONS – unchanged
@@ -298,36 +299,43 @@ if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
-# ---- Custom CSS: reduce header spacing and button gaps ----
+# ---- Custom CSS: float the app with a border, reduce header spacing ----
 st.markdown("""
 <style>
-    /* Reduce the top margin of the main title */
-    .main-header h1 {
-        margin-top: -20px;
+    /* Main container: floating card */
+    .main > div {
+        background: white;
+        border-radius: 12px;
+        padding: 1.5rem 2rem 2rem 2rem;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        border: 1px solid #e6e9ef;
+        margin-bottom: 2rem;
     }
-    /* Tighten the top padding of the main container */
+    /* Reduce top padding */
     .block-container {
-        padding-top: 1rem;
+        padding-top: 0.5rem;
+        padding-bottom: 1rem;
     }
-    /* Reduce spacing between the two buttons */
+    /* Tighten button gaps */
     div[data-testid="column"]:nth-child(1) {
         padding-right: 2px;
     }
     div[data-testid="column"]:nth-child(2) {
         padding-left: 2px;
     }
+    /* Make the header smaller */
+    h1 {
+        margin-top: -10px;
+        margin-bottom: 0.5rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# ---- Title with reduced spacing ----
-st.markdown("<h1 class='main-header'>📚 Literature Search</h1>", unsafe_allow_html=True)
+# ---- Title ----
+st.title("📚 Literature Search")
 
 # ---- Brief app summary ----
 st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals, and PDF links are all included.")
-
-# ---- EMAIL WARNING ----
-if st.session_state.get("email") in ["", "your_email@example.com"]:
-    st.warning("⚠️ **Please enter your real email address** in the field below. Without a real email, OpenAlex limits you to the lowest daily quota (only 10 requests). A real email gives you 10x more daily searches.")
 
 # ---- OpenAlex description (with session info inside) ----
 with st.expander("ℹ️ About this search tool", expanded=False):
@@ -397,11 +405,7 @@ with st.form("search_form"):
     with col1:
         phrases_input = st.text_area(
             "🔍 Search Phrases",
-            value=(
-                'climate AND ("man-made change" OR change)\n'
-                '"epistemic cognition" OR "personal epistemology" OR "epistemological beliefs"\n'
-                '"climate change" NOT denial'
-            ),
+            value='''"epistemic cognition" AND (EFL OR "English as a foreign language")''',   # new default
             help=(
                 "Each line is a separate query. Use uppercase AND, OR, NOT. "
                 "Put double quotes around exact phrases (e.g., \"climate change\")."
@@ -438,7 +442,6 @@ with st.form("search_form"):
 
 # ---- HANDLE FORM SUBMISSION (NEW SEARCH) ----
 if submitted:
-    # Reset results flag so we don't show old preview while searching
     st.session_state.results_available = False
     st.session_state.flat_rows = []
     st.session_state.total_results = 0
@@ -468,7 +471,7 @@ if submitted:
                 st.session_state.phrases,
                 st.session_state.years,
                 email,
-                api_key,          # now defined
+                api_key,
                 work_type,
                 search_openalex_phrase_year
             )
@@ -521,7 +524,6 @@ if st.session_state.do_full_fetch:
             work_type,
             refresh_seed
         )
-        # Deduplicate and store in session
         seen_keys = set()
         flat_rows = []
         for year, rows in results_by_year.items():
@@ -533,14 +535,13 @@ if st.session_state.do_full_fetch:
         total = len(flat_rows)
         status.update(label=f"✅ Done! Found {total} unique records.", state="complete")
 
-    # Save results in session state
     st.session_state.flat_rows = flat_rows
     st.session_state.total_results = total
     st.session_state.results_available = True
-    st.session_state.do_full_fetch = False  # reset so we don't fetch again on next rerun
-    st.rerun()  # rerun to show the preview (now results_available is True)
+    st.session_state.do_full_fetch = False
+    st.rerun()
 
-# ---- PREVIEW AND EXPORT (shown when results_available is True) ----
+# ---- PREVIEW AND EXPORT ----
 if st.session_state.results_available:
     flat_rows = st.session_state.flat_rows
     total = st.session_state.total_results
@@ -562,9 +563,7 @@ if st.session_state.results_available:
             })
         df = pd.DataFrame(all_rows)
 
-        # ---- Show count in header ----
         st.subheader(f"📄 Preview of Results ({total} hits)")
-
         st.caption("Check the box next to any row you want to **exclude** from the final download.")
 
         df_with_checkboxes = df.copy()
@@ -573,7 +572,6 @@ if st.session_state.results_available:
         if st.session_state.df_editor is None or len(st.session_state.df_editor) != len(df_with_checkboxes):
             st.session_state.df_editor = df_with_checkboxes
 
-        # ---- Buttons with reduced spacing ----
         colA, colB = st.columns([1, 1])
         if colA.button("✖️ Exclude All", use_container_width=True):
             st.session_state.df_editor["Exclude"] = True
@@ -589,7 +587,7 @@ if st.session_state.results_available:
             column_config={
                 "Exclude": st.column_config.CheckboxColumn(
                     "Exclude", 
-                    width=80,
+                    width="medium",   # enough space for the label
                     help="Check to exclude this row from export"
                 ),
                 "Year": st.column_config.NumberColumn("Year", width="small"),
@@ -599,7 +597,7 @@ if st.session_state.results_available:
                 "Abstract": st.column_config.TextColumn(
                     "Abstract (double click to expand)", 
                     width="large",
-                    disabled=False
+                    disabled=False    # prevents mobile double‑tap bug
                 ),
                 "Has PDF": st.column_config.TextColumn("PDF", width="small"),
                 "Phrases": st.column_config.TextColumn("Matched Phrases", width="medium"),
@@ -607,7 +605,6 @@ if st.session_state.results_available:
             hide_index=True,
         )
 
-        # Update session state with manual edits
         st.session_state.df_editor = edited_df
 
         excluded_indices = set()
@@ -620,28 +617,44 @@ if st.session_state.results_available:
         if excluded_indices:
             st.info(f"🚫 {len(excluded_indices)} row(s) marked for exclusion from the download.")
 
-        if st.button("⬇️ Download Excel File", use_container_width=True):
-            with st.spinner("Generating Excel..."):
-                output = BytesIO()
-                export_to_excel_bytes(
-                    flat_rows,
-                    phrases,
-                    years,
-                    output,
-                    email=email,
-                    exclude_indices=excluded_indices
-                )
-                output.seek(0)
-                st.download_button(
-                    label="📥 Click here to save the file",
-                    data=output,
-                    file_name=f"Literature_Search_{years[0]}-{years[-1]}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        # ---- Download section with filename input ----
+        st.markdown("---")
+        col_name, col_btn = st.columns([2, 1])
+        with col_name:
+            # Auto‑generate filename suggestion
+            default_filename = f"{datetime.now().strftime('%Y-%m-%d')}_{phrases[0][:40].replace(' ', '_')}.xlsx"
+            filename = st.text_input(
+                "📁 Filename for download",
+                value=default_filename,
+                help="Customize the file name before downloading."
+            )
+        with col_btn:
+            # The download button now uses the filename from the input
+            st.write("")  # vertical spacer
+            st.write("") 
+            if st.button("⬇️ Download Excel File", use_container_width=True):
+                with st.spinner("Generating Excel..."):
+                    output = BytesIO()
+                    export_to_excel_bytes(
+                        flat_rows,
+                        phrases,
+                        years,
+                        output,
+                        email=email,
+                        exclude_indices=excluded_indices
+                    )
+                    output.seek(0)
+                    st.download_button(
+                        label="📥 Click to save",
+                        data=output,
+                        file_name=filename if filename.strip() else default_filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
     else:
         st.info("No results to preview.")
 
-    # Save to search history (only once per search)
+    # Save to search history
     search_record = {
         "phrases": ", ".join(phrases),
         "years": f"{years[0]}-{years[-1]}",
