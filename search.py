@@ -71,7 +71,7 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – now returns both results and debug info
+# 2. SEARCH FUNCTION – FIXED: no manual encoding
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200, 
@@ -79,12 +79,15 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
     session = session or requests.Session()
     results = []
     cursor = "*"
-    first_page_meta_count = None  # To store the total count from OpenAlex
+    first_page_meta_count = None
 
-    encoded_phrase = urllib.parse.quote(phrase, safe='')
+    # ---- IMPORTANT FIX: Do NOT manually encode the phrase ----
+    # We let requests do the encoding when we pass params.
+    # The filter value is: title_and_abstract.search:"exact phrase",publication_year:year
+    # We need to wrap the phrase in double quotes for exact-phrase matching.
     
     filter_parts = [
-        f'title_and_abstract.search:"{encoded_phrase}"',
+        f'title_and_abstract.search:"{phrase}"',  # <-- No manual encoding here
         f'publication_year:{year}'
     ]
     if work_type and work_type != "All types":
@@ -103,10 +106,10 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
     if api_key:
         params["api_key"] = api_key
 
-    # ---- Build the exact URL for debugging ----
-    # We'll construct a temporary URL to show the user if results are 0
+    # Build debug URL (for display only)
     temp_params = dict(params)
     temp_params["cursor"] = "*"
+    # Use urlencode to build a readable URL for debugging
     debug_url = f"{OPENALEX_URL}?{urllib.parse.urlencode(temp_params)}"
 
     while cursor:
@@ -123,7 +126,6 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
 
         data = resp.json()
         
-        # Capture the total count from the first page
         if first_page_meta_count is None:
             first_page_meta_count = data.get("meta", {}).get("count", 0)
 
@@ -138,13 +140,13 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
     return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 3. COLLECT FUNCTION – updated to handle debug info
+# 3. COLLECT FUNCTION
 # ============================================================
 
 def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_type=None, 
             fetch_fn=search_openalex_phrase_year):
     by_year = {y: {} for y in years}
-    debug_info = {}  # Store debug info for each phrase/year
+    debug_info = {}
     
     for year in years:
         for phrase in phrases:
@@ -153,7 +155,6 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
                 sleep_between=sleep_between, work_type=work_type
             )
             
-            # Store debug info
             debug_info[(phrase, year)] = {
                 "count": count,
                 "url": debug_url
@@ -282,7 +283,7 @@ st.title("📚 Literature Search")
 api_key = st.secrets.get("OPENALEX_API_KEY")
 
 if not api_key:
-    st.error("🚨 **API Key Missing!** ...")
+    st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
 # ---- Session state init ----
@@ -298,7 +299,7 @@ st.info(
     "No data is stored on any server or shared with anyone."
 )
 
-# ---- OpenAlex description (now MINIMISED by default) ----
+# ---- OpenAlex description (minimised by default) ----
 with st.expander("ℹ️ About this search tool", expanded=False):
     st.markdown("""
     This tool searches **OpenAlex** – a free, open index of the world's research ecosystem.
@@ -323,25 +324,18 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     ⚠️ **Cache & Rate limits:** 
     - The app caches results to speed up repeated searches. 
     - If you are getting **0 results unexpectedly**, check the **"Force Refresh"** box below and search again.
-    - If it still returns 0, the app will now show you the exact URL it called so you can test it manually.
     """)
 
-# ---- UPDATED HELP TEXT with mini-tutorial ----
-search_help_text = """
-**Mini‑tutorial for boolean search (use UPPERCASE operators):**
-
+# ---- BOOLEAN EXAMPLES – now always visible below the search box ----
+st.markdown("""
+**Boolean search examples (use UPPERCASE operators):**
 - `"climate AND change"` → finds works containing **both** words
 - `"epistemic cognition OR personal epistemology"` → finds works containing **either** phrase
 - `"climate change NOT denial"` → finds works about climate change that **do not** mention denial
+- `"machine learning AND (neural OR deep)"` → more complex combinations work too
 
-**Non‑ASCII characters** (e.g., 守破離) work fine.
-
-**Combine multiple terms:** 
-- If you want to search widely, put `"climate OR weather OR atmosphere"` on one line.
-- If you want multiple independent searches, put each on a new line.
-"""
-
-st.markdown("Enter your search phrases below. Use **uppercase** `AND`, `OR`, `NOT` for boolean logic.")
+Non‑ASCII characters (e.g., 守破離) work fine.
+""")
 
 with st.form("search_form"):
     col1, col2 = st.columns(2)
@@ -349,9 +343,8 @@ with st.form("search_form"):
         phrases_input = st.text_area(
             "🔍 Search Phrases (one per line)",
             value="epistemic cognition\npersonal epistemology\nepistemological beliefs",
-            help=search_help_text  # <--- Updated tutorial here
+            help="Enter one phrase per line. Use AND, OR, NOT (uppercase) for boolean logic."
         )
-        # ---- DEFAULT YEAR RANGE changed to 2020-2026 ----
         start_year = st.number_input("Start Year", min_value=1900, max_value=2030, value=2020, step=1)
         end_year = st.number_input("End Year", min_value=1900, max_value=2030, value=2026, step=1)
         
@@ -399,7 +392,6 @@ if submitted:
     with st.status("⏳ Searching OpenAlex...", expanded=True) as status:
         refresh_seed = random.randint(0, 999999) if force_refresh else 0
         
-        # ---- Unpack results and debug info ----
         results_by_year, debug_info = run_collection(
             tuple(phrases), 
             tuple(years), 
@@ -419,14 +411,11 @@ if submitted:
         st.warning("⚠️ **0 results found.** This might be due to a rate limit, a malformed query, or genuinely 0 works.")
         st.warning("Here is the exact URL the app called for the first search (copy and paste it into your browser to test):")
         
-        # Get the first debug entry
         first_key = list(debug_info.keys())[0]
         first_debug = debug_info[first_key]
         st.code(first_debug["url"], language="text")
-        st.caption("If this URL shows results in your browser, the app is having a parsing issue. If it shows 0 or an error, the problem is with your API key/rate limits.")
-        
-        # Optionally, display the raw count from OpenAlex
         st.caption(f"OpenAlex reported count: **{first_debug['count']}** for '{first_key[0]}' in {first_key[1]}.")
+        st.caption("If this URL shows results in your browser, the app is having a parsing issue. If it shows 0 or an error, the problem is with your API key/rate limits.")
 
     # ---- Save to search history ----
     search_record = {
