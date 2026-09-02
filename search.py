@@ -71,15 +71,19 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – correctly encoded, no double‑encoding
+# 2. SEARCH FUNCTION – can return only the count (pre‑flight)
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200, 
-                                session=None, sleep_between=0.1, work_type=None):
+                                session=None, sleep_between=0.1, work_type=None,
+                                just_count=False):
+    """
+    Query OpenAlex for a single phrase, restricted to one year.
+    If just_count=True, returns (count, debug_url) without fetching pages.
+    """
     session = session or requests.Session()
-    results = []
     cursor = "*"
-    first_page_meta_count = None
+    count = 0
 
     filter_parts = [
         f'title_and_abstract.search:"{phrase}"',
@@ -92,48 +96,62 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
     
     params = {
         "filter": filter_string,
-        "per-page": per_page
+        "per-page": 1 if just_count else per_page  # Only need 1 for count
     }
     
     if email:
         params["mailto"] = email
-    
     if api_key:
         params["api_key"] = api_key
 
+    # Build debug URL
     temp_params = dict(params)
     temp_params["cursor"] = "*"
     debug_url = f"{OPENALEX_URL}?{urllib.parse.urlencode(temp_params)}"
 
-    while cursor:
-        params["cursor"] = cursor
-        
+    if just_count:
+        # Only fetch the first page to get the count
         try:
             resp = session.get(OPENALEX_URL, params=params, timeout=30)
             resp.raise_for_status()
+            data = resp.json()
+            count = data.get("meta", {}).get("count", 0)
         except requests.exceptions.HTTPError as e:
-            st.error(f"❌ OpenAlex API error for phrase '{phrase}' (year {year}):")
+            st.error(f"❌ OpenAlex API error for count of '{phrase}' (year {year}):")
             st.error(f"Status code: {resp.status_code}")
             st.error(f"Response body (first 500 chars):\n{resp.text[:500]}")
             raise
+        return count, debug_url
+    else:
+        # Full fetch
+        results = []
+        first_page_meta_count = None
+        while cursor:
+            params["cursor"] = cursor
+            try:
+                resp = session.get(OPENALEX_URL, params=params, timeout=30)
+                resp.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                st.error(f"❌ OpenAlex API error for phrase '{phrase}' (year {year}):")
+                st.error(f"Status code: {resp.status_code}")
+                st.error(f"Response body (first 500 chars):\n{resp.text[:500]}")
+                raise
 
-        data = resp.json()
-        
-        if first_page_meta_count is None:
-            first_page_meta_count = data.get("meta", {}).get("count", 0)
+            data = resp.json()
+            if first_page_meta_count is None:
+                first_page_meta_count = data.get("meta", {}).get("count", 0)
 
-        for work in data.get("results", []):
-            results.append(normalize_work(work))
-        
-        cursor = (data.get("meta", {}) or {}).get("next_cursor")
-        if not data.get("results"):
-            break
-        time.sleep(sleep_between)
-
-    return results, first_page_meta_count, debug_url
+            for work in data.get("results", []):
+                results.append(normalize_work(work))
+            
+            cursor = (data.get("meta", {}) or {}).get("next_cursor")
+            if not data.get("results"):
+                break
+            time.sleep(sleep_between)
+        return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 3. COLLECT FUNCTION – returns results_by_year
+# 3. COLLECT FUNCTION – with pre‑flight support
 # ============================================================
 
 def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_type=None, 
@@ -145,7 +163,8 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
         for phrase in phrases:
             rows, count, debug_url = fetch_fn(
                 phrase, year, email=email, api_key=api_key, 
-                sleep_between=sleep_between, work_type=work_type
+                sleep_between=sleep_between, work_type=work_type,
+                just_count=False  # full fetch
             )
             
             debug_info[(phrase, year)] = {
@@ -166,7 +185,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT – now takes flat_rows (deduped globally)
+# 4. EXPORT – unchanged (uses flat_rows)
 # ============================================================
 
 ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
@@ -177,10 +196,6 @@ def sanitize_for_excel(value):
     return value
 
 def export_to_excel_bytes(flat_rows, phrases, years, out_bytes, email=None, exclude_indices=None):
-    """
-    flat_rows: list of (year, row) tuples – already deduplicated globally.
-    exclude_indices: set of indices (from the preview) to skip.
-    """
     if exclude_indices is None:
         exclude_indices = set()
     
@@ -191,10 +206,8 @@ def export_to_excel_bytes(flat_rows, phrases, years, out_bytes, email=None, excl
     bold = Font(bold=True)
     missing_pdfs_rows = []
 
-    # Filter out excluded rows
     filtered_flat = [(year, row) for idx, (year, row) in enumerate(flat_rows) if idx not in exclude_indices]
 
-    # Group by year for sheets
     filtered_by_year = {}
     for year, row in filtered_flat:
         if year not in filtered_by_year:
@@ -269,7 +282,21 @@ def export_to_excel_bytes(flat_rows, phrases, years, out_bytes, email=None, excl
     wb.save(out_bytes)
 
 # ============================================================
-# 5. STREAMLIT USER INTERFACE
+# 5. PRE‑FLIGHT COUNT FUNCTION
+# ============================================================
+
+def get_total_count(phrases, years, email, api_key, work_type, fetch_fn):
+    """Returns total count across all (phrase, year) combos."""
+    total = 0
+    for year in years:
+        for phrase in phrases:
+            count, _ = fetch_fn(phrase, year, email=email, api_key=api_key,
+                                work_type=work_type, just_count=True)
+            total += count
+    return total
+
+# ============================================================
+# 6. STREAMLIT USER INTERFACE
 # ============================================================
 
 st.set_page_config(page_title="Literature Search", layout="wide")
@@ -287,6 +314,12 @@ if "email" not in st.session_state:
     st.session_state.email = ""
 if "search_history" not in st.session_state:
     st.session_state.search_history = []
+if "preflight_warning" not in st.session_state:
+    st.session_state.preflight_warning = False
+if "preflight_count" not in st.session_state:
+    st.session_state.preflight_count = 0
+if "force_fetch" not in st.session_state:
+    st.session_state.force_fetch = False
 
 # ---- DISCLAIMER ----
 st.info(
@@ -321,8 +354,11 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     ⚠️ **Cache & Rate limits:** 
     - The app caches results to speed up repeated searches. 
     - If you are getting **0 results unexpectedly**, check the **"Force Refresh"** box below and search again.
+    
+    🛡️ **Pre‑flight check:** The app first counts how many works match your search. If the count exceeds 2000, it warns you to narrow your search to avoid excessive API calls. You can still force a full fetch if needed.
     """)
 
+# ---- THE MAIN FORM ----
 with st.form("search_form"):
     col1, col2 = st.columns(2)
     with col1:
@@ -367,14 +403,11 @@ with st.form("search_form"):
 
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
-# ---- THE CACHED FUNCTION ----
-@st.cache_data(show_spinner=False)
-def run_collection(phrases_tuple, years_tuple, email, api_key, work_type, refresh_seed):
-    return collect(list(phrases_tuple), list(years_tuple), email=email, api_key=api_key, work_type=work_type)
+# ---- HANDLE PRE‑FLIGHT AND FULL SEARCH ----
+THRESHOLD = 2000
 
 if submitted:
     st.session_state.email = email
-    
     phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
     years = list(range(int(start_year), int(end_year) + 1))
 
@@ -382,19 +415,68 @@ if submitted:
         st.error("Please enter at least one search phrase.")
         st.stop()
 
-    with st.status("⏳ Searching OpenAlex...", expanded=True) as status:
+    # ---- Step 1: Pre‑flight count ----
+    with st.status("🔎 Checking search scope...", expanded=True) as status:
+        try:
+            total_count = get_total_count(phrases, years, email, api_key, work_type, search_openalex_phrase_year)
+            status.update(label=f"🔎 Found approximately {total_count} matching works across all phrases and years.", state="running")
+        except Exception as e:
+            st.error(f"Pre‑flight count failed: {e}")
+            st.stop()
+
+    # ---- Step 2: Check threshold ----
+    if total_count > THRESHOLD and not st.session_state.force_fetch:
+        st.warning(f"⚠️ **Search too broad!** This search would return approximately **{total_count}** works, which is above the safety threshold of **{THRESHOLD}**. This may consume a large number of API requests and take a long time.")
+        st.warning("Please narrow your search by:")
+        st.warning("- Reducing the year range")
+        st.warning("- Using more specific phrases (e.g., `\"deep learning\"` instead of `learning`)")
+        st.warning("- Combining terms with `AND` (e.g., `\"climate change\" AND adaptation`)")
+        st.warning("- Limiting the number of phrases per line")
+
+        # Show the override option
+        force_check = st.checkbox("⚠️ **Force full fetch anyway** (I understand the risks)")
+        if force_check:
+            st.session_state.force_fetch = True
+            if st.button("📥 Fetch all records", use_container_width=True):
+                # Proceed to full fetch
+                with st.status("⏳ Fetching full records...", expanded=True) as status2:
+                    results_by_year, debug_info = run_collection(
+                        tuple(phrases), tuple(years), email, api_key, work_type, refresh_seed=0
+                    )
+                    # Deduplicate and show preview as before
+                    # We'll reuse the existing code after the full fetch
+                    # But to avoid duplication, we can set a flag and continue
+                    st.session_state.do_full_fetch = True
+                    st.experimental_rerun()
+        else:
+            st.session_state.force_fetch = False
+            st.stop()
+    else:
+        # Proceed directly to full fetch
+        st.session_state.force_fetch = False
+        st.session_state.do_full_fetch = True
+        st.experimental_rerun()
+
+# ---- THE FULL FETCH (after pre‑flight approval) ----
+if "do_full_fetch" in st.session_state and st.session_state.do_full_fetch:
+    # We need to re‑run the full fetch here.
+    # Since we can't easily pass data between reruns, we'll re‑run the whole logic.
+    # But we can simply proceed with the search here.
+    # Actually, the easiest is to put the full fetch code inside an if block that runs when do_full_fetch is True.
+    # We'll just run it now.
+    # To avoid infinite loops, we'll reset the flag.
+    st.session_state.do_full_fetch = False
+
+    # Re‑read the form inputs (they are still in session state)
+    phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
+    years = list(range(int(start_year), int(end_year) + 1))
+
+    with st.status("⏳ Fetching full records...", expanded=True) as status:
         refresh_seed = random.randint(0, 999999) if force_refresh else 0
-        
         results_by_year, debug_info = run_collection(
-            tuple(phrases), 
-            tuple(years), 
-            email, 
-            api_key, 
-            work_type,
-            refresh_seed
+            tuple(phrases), tuple(years), email, api_key, work_type, refresh_seed
         )
-        
-        # ---- FLATTEN AND DEDUPLICATE GLOBALLY ----
+        # Flatten and deduplicate
         seen_keys = set()
         flat_rows = []
         for year, rows in results_by_year.items():
@@ -403,35 +485,10 @@ if submitted:
                 if key not in seen_keys:
                     seen_keys.add(key)
                     flat_rows.append((year, r))
-        
         total = len(flat_rows)
-        status.update(label=f"✅ Done! Found {total} unique records (after deduplication).", state="complete")
+        status.update(label=f"✅ Done! Found {total} unique records.", state="complete")
 
-    if force_refresh:
-        st.success("🔄 Cache bypassed! Results are freshly fetched from OpenAlex.")
-
-    # ---- DEBUG: If total is 0, show the exact URL ----
-    if total == 0:
-        st.warning("⚠️ **0 results found.** This might be due to a rate limit, a malformed query, or genuinely 0 works.")
-        st.warning("Here is the exact URL the app called for the first search (copy and paste it into your browser to test):")
-        
-        first_key = list(debug_info.keys())[0]
-        first_debug = debug_info[first_key]
-        st.code(first_debug["url"], language="text")
-        st.caption(f"OpenAlex reported count: **{first_debug['count']}** for '{first_key[0]}' in {first_key[1]}.")
-        st.caption("If this URL shows results in your browser, the app is having a parsing issue. If it shows 0 or an error, the problem is with your API key/rate limits.")
-
-    # ---- Save to search history ----
-    search_record = {
-        "phrases": ", ".join(phrases),
-        "years": f"{start_year}-{end_year}",
-        "timestamp": time.strftime("%Y-%m-%d %H:%M"),
-        "total_results": total,
-        "work_type": work_type
-    }
-    st.session_state.search_history.append(search_record)
-
-    # ---- Build preview from flat_rows ----
+    # ---- Show preview and export (same as before) ----
     if total > 0:
         all_rows = []
         for year, r in flat_rows:
@@ -448,23 +505,18 @@ if submitted:
         st.subheader("📄 Preview of Results")
         st.caption("Check the box next to any row you want to **exclude** from the final download.")
 
-        # ---- Add Exclude column ----
         df_with_checkboxes = df.copy()
         df_with_checkboxes.insert(0, "Exclude", False)
 
-        # ---- Manage session state for the editor ----
-        # If the number of rows changed (new search), reset the editor state
         if "df_editor" not in st.session_state or len(st.session_state.df_editor) != len(df_with_checkboxes):
             st.session_state.df_editor = df_with_checkboxes
 
-        # ---- Bulk action buttons ----
         colA, colB, colC = st.columns([1, 1, 3])
         if colA.button("✖️ Exclude All"):
             st.session_state.df_editor["Exclude"] = True
         if colB.button("✅ Include All"):
             st.session_state.df_editor["Exclude"] = False
 
-        # ---- Data editor ----
         edited_df = st.data_editor(
             st.session_state.df_editor,
             use_container_width=True,
@@ -481,10 +533,8 @@ if submitted:
             hide_index=True,
         )
 
-        # ---- Update session state with manual edits ----
         st.session_state.df_editor = edited_df
 
-        # ---- Calculate excluded indices ----
         excluded_indices = set()
         for idx, row in edited_df.iterrows():
             if row["Exclude"]:
@@ -495,15 +545,14 @@ if submitted:
         if excluded_indices:
             st.info(f"🚫 {len(excluded_indices)} row(s) marked for exclusion from the download.")
 
-        # ---- Export button ----
         if st.button("⬇️ Download Excel File", use_container_width=True):
             with st.spinner("Generating Excel..."):
                 output = BytesIO()
                 export_to_excel_bytes(
-                    flat_rows,        # pass the deduped flat list
-                    phrases, 
-                    years, 
-                    output, 
+                    flat_rows,
+                    phrases,
+                    years,
+                    output,
                     email=email,
                     exclude_indices=excluded_indices
                 )
@@ -517,9 +566,24 @@ if submitted:
     else:
         st.info("No results to preview.")
 
-# ---- Display search history ----
-if st.session_state.search_history:
-    with st.expander("📜 Search History (this session only)"):
-        for i, record in enumerate(reversed(st.session_state.search_history)):
-            st.write(f"**{i+1}.** {record['timestamp']} – **{record['phrases']}** ({record['years']}) → {record['total_results']} results | Type: {record['work_type']}")
-        st.caption("This history is stored only in your browser session and will be cleared when you close the tab.")
+    # Save to history
+    search_record = {
+        "phrases": ", ".join(phrases),
+        "years": f"{start_year}-{end_year}",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M"),
+        "total_results": total,
+        "work_type": work_type
+    }
+    st.session_state.search_history.append(search_record)
+
+    # Display history
+    if st.session_state.search_history:
+        with st.expander("📜 Search History (this session only)"):
+            for i, record in enumerate(reversed(st.session_state.search_history)):
+                st.write(f"**{i+1}.** {record['timestamp']} – **{record['phrases']}** ({record['years']}) → {record['total_results']} results | Type: {record['work_type']}")
+            st.caption("This history is stored only in your browser session and will be cleared when you close the tab.")
+
+# ---- Helper function for caching ----
+@st.cache_data(show_spinner=False)
+def run_collection(phrases_tuple, years_tuple, email, api_key, work_type, refresh_seed):
+    return collect(list(phrases_tuple), list(years_tuple), email=email, api_key=api_key, work_type=work_type)
