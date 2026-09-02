@@ -72,16 +72,12 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – updated to handle multiple work types
+# 2. SEARCH FUNCTION – handles multiple work types
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200, 
                                 session=None, sleep_between=0.1, work_types=None,
                                 just_count=False):
-    """
-    work_types: list of type strings, e.g. ["article", "book-chapter"]
-    If empty or ["All types"], no type filter is applied.
-    """
     session = session or requests.Session()
     cursor = "*"
     count = 0
@@ -90,7 +86,6 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         f'title_and_abstract.search:"{phrase}"',
         f'publication_year:{year}'
     ]
-    # Handle work_types filter
     if work_types and "All types" not in work_types:
         type_filter = "|".join(work_types)
         filter_parts.append(f'type:{type_filter}')
@@ -151,7 +146,7 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 3. COLLECT FUNCTION – updated to accept work_types list
+# 3. COLLECT FUNCTION
 # ============================================================
 
 def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_types=None, 
@@ -183,7 +178,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT – unchanged
+# 4. EXPORT
 # ============================================================
 
 ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
@@ -245,7 +240,6 @@ def export_to_excel_bytes(flat_rows, phrases, years, out_bytes, email=None, excl
             ws.column_dimensions[get_column_letter(i)].width = w
         ws.freeze_panes = "A2"
 
-    # Settings sheet
     settings_ws = wb.create_sheet(title="Search Settings")
     settings_ws.cell(row=1, column=1, value="Setting").font = bold
     settings_ws.cell(row=1, column=2, value="Value").font = bold
@@ -262,7 +256,6 @@ def export_to_excel_bytes(flat_rows, phrases, years, out_bytes, email=None, excl
     settings_ws.column_dimensions["A"].width = 30
     settings_ws.column_dimensions["B"].width = 60
 
-    # Missing PDFs sheet
     missing_ws = wb.create_sheet(title="Missing PDFs")
     for col_idx, h in enumerate(["Title", "Authors", "Year", "DOI"], start=1):
         missing_ws.cell(row=1, column=col_idx, value=h).font = bold
@@ -280,7 +273,7 @@ def export_to_excel_bytes(flat_rows, phrases, years, out_bytes, email=None, excl
     wb.save(out_bytes)
 
 # ============================================================
-# 5. PRE‑FLIGHT COUNT FUNCTION – updated for work_types
+# 5. PRE‑FLIGHT COUNT
 # ============================================================
 
 def get_total_count(phrases, years, email, api_key, work_types, fetch_fn):
@@ -293,7 +286,7 @@ def get_total_count(phrases, years, email, api_key, work_types, fetch_fn):
     return total
 
 # ============================================================
-# 6. STREAMLIT USER INTERFACE
+# 6. STREAMLIT UI
 # ============================================================
 
 st.set_page_config(page_title="Literature Search", layout="wide")
@@ -305,26 +298,17 @@ if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
-# ---- Custom CSS: floating card, header fully visible, button spacing ----
+# ---- Custom CSS: only floating card and button spacing (no header tweaks) ----
 st.markdown("""
 <style>
     /* Main container: floating card */
     .main > div {
         background: white;
         border-radius: 12px;
-        padding: 1.2rem 2rem 2rem 2rem;
+        padding: 1.5rem 2rem 2rem 2rem;
         box-shadow: 0 4px 20px rgba(0,0,0,0.08);
         border: 1px solid #e6e9ef;
         margin-bottom: 2rem;
-    }
-    /* Ensure the header is not cut off */
-    .block-container {
-        padding-top: 0.2rem;
-        padding-bottom: 1rem;
-    }
-    h1 {
-        margin-top: 0px;
-        margin-bottom: 0.3rem;
     }
     /* Tighten button gaps */
     div[data-testid="column"]:nth-child(1) {
@@ -342,7 +326,7 @@ st.title("📚 Literature Search")
 # ---- Brief app summary ----
 st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals, and PDF links are all included.")
 
-# ---- OpenAlex description (with session info inside) ----
+# ---- OpenAlex description ----
 with st.expander("ℹ️ About this search tool", expanded=False):
     st.markdown("""
     This tool searches **OpenAlex** – a free, open index of the world's research ecosystem.
@@ -374,7 +358,7 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     ℹ️ **Session‑only storage**: Your email and search history are stored **only in your current browser session**. If you close this tab or refresh the page, they will be cleared. No data is stored on any server or shared with anyone.
     """)
 
-# ---- INITIALISE ALL SESSION STATE KEYS ----
+# ---- Session state init ----
 if "email" not in st.session_state:
     st.session_state.email = ""
 if "search_history" not in st.session_state:
@@ -428,11 +412,10 @@ with st.form("search_form"):
         email = st.text_input(
             "📧 Recommended: Your Email (for OpenAlex polite pool)",
             value=st.session_state.email,
-            help="⚠️ **REQUIRED for best performance.** Use your real email address (e.g., name@university.edu). Without it, you'll have only 10 requests per day."
+            help="Use your real email address (e.g., name@university.edu). Without it, you'll have only 10 requests per day."
         )
         st.caption("**Use of a real email gives you 10x more daily searches.**")
         
-        # Work type: multi-select (now in the right column)
         work_type_options = ["All types", "article", "book", "book-chapter", "dataset", 
                              "dissertation", "preprint", "conference-paper", "conference-abstract",
                              "book-review", "report", "editorial", "letter", "erratum"]
@@ -442,13 +425,12 @@ with st.form("search_form"):
             default=["All types"],
             help="Filter results by one or more document types. 'All types' means no filter."
         )
-        # If "All types" is selected, ignore other selections
         if "All types" in work_types:
             work_types = ["All types"]
 
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
-# ---- HANDLE FORM SUBMISSION (NEW SEARCH) ----
+# ---- Handle submission ----
 if submitted:
     st.session_state.results_available = False
     st.session_state.flat_rows = []
@@ -456,9 +438,9 @@ if submitted:
 
     st.session_state.email = email
 
-    if not email or email == "your_email@example.com" or email.strip() == "":
-        st.error("❌ **Please enter your real email address.**")
-        st.error("Without a real email, OpenAlex limits you to only ~10 requests per day. Enter your real email and try again.")
+    if not email or email.strip() == "":
+        st.error("❌ **Please enter your email address.**")
+        st.error("Without an email, OpenAlex limits you to only ~10 requests per day. Enter your email and try again.")
         st.stop()
 
     st.session_state.phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
@@ -472,7 +454,7 @@ if submitted:
         st.error("Please enter at least one search phrase.")
         st.stop()
 
-    # ---- Pre‑flight count ----
+    # Pre‑flight count
     with st.status("🔎 Checking search scope...", expanded=True) as status:
         try:
             total_count = get_total_count(
@@ -510,7 +492,7 @@ if submitted:
         st.session_state.do_full_fetch = True
         st.rerun()
 
-# ---- FULL FETCH (triggered by rerun) ----
+# ---- Full fetch ----
 if st.session_state.do_full_fetch:
     phrases = st.session_state.phrases
     years = st.session_state.years
@@ -549,7 +531,7 @@ if st.session_state.do_full_fetch:
     st.session_state.do_full_fetch = False
     st.rerun()
 
-# ---- PREVIEW AND EXPORT ----
+# ---- Preview and export ----
 if st.session_state.results_available:
     flat_rows = st.session_state.flat_rows
     total = st.session_state.total_results
@@ -625,7 +607,6 @@ if st.session_state.results_available:
         if excluded_indices:
             st.info(f"🚫 {len(excluded_indices)} row(s) marked for exclusion from the download.")
 
-        # ---- Download section with filename input ----
         st.markdown("---")
         col_name, col_btn = st.columns([2, 1])
         with col_name:
@@ -636,8 +617,8 @@ if st.session_state.results_available:
                 help="Customize the file name before downloading."
             )
         with col_btn:
-            st.write("")  # vertical spacer
-            st.write("") 
+            st.write("")
+            st.write("")
             if st.button("⬇️ Download Excel File", use_container_width=True):
                 with st.spinner("Generating Excel..."):
                     output = BytesIO()
@@ -660,7 +641,7 @@ if st.session_state.results_available:
     else:
         st.info("No results to preview.")
 
-    # Save to search history
+    # Save history
     search_record = {
         "phrases": ", ".join(phrases),
         "years": f"{years[0]}-{years[-1]}",
