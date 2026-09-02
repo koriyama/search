@@ -327,6 +327,17 @@ def get_total_count(phrases, years, email, api_key, work_types, fetch_fn):
 
 st.set_page_config(page_title="Literature Search", layout="wide")
 
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding-top: 1.5rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 api_key = st.secrets.get("OPENALEX_API_KEY")
 if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
