@@ -99,7 +99,6 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         params["mailto"] = email
     if api_key:
         params["api_key"] = api_key
-    # ✅ prepaid=true removed – OpenAlex handles this automatically
 
     temp_params = dict(params)
     temp_params["cursor"] = "*"
@@ -323,6 +322,12 @@ if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
 if "df_editor" not in st.session_state:
     st.session_state.df_editor = None
+if "results_available" not in st.session_state:
+    st.session_state.results_available = False
+if "flat_rows" not in st.session_state:
+    st.session_state.flat_rows = []
+if "total_results" not in st.session_state:
+    st.session_state.total_results = 0
 
 # ---- DISCLAIMER ----
 st.info(
@@ -410,8 +415,13 @@ with st.form("search_form"):
 
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
-# ---- HANDLE FORM SUBMISSION ----
+# ---- HANDLE FORM SUBMISSION (NEW SEARCH) ----
 if submitted:
+    # Reset results flag so we don't show old preview while searching
+    st.session_state.results_available = False
+    st.session_state.flat_rows = []
+    st.session_state.total_results = 0
+
     st.session_state.email = email
 
     if not email or email == "your_email@example.com" or email.strip() == "":
@@ -430,6 +440,7 @@ if submitted:
         st.error("Please enter at least one search phrase.")
         st.stop()
 
+    # ---- Pre‑flight count ----
     with st.status("🔎 Checking search scope...", expanded=True) as status:
         try:
             total_count = get_total_count(
@@ -467,7 +478,7 @@ if submitted:
         st.session_state.do_full_fetch = True
         st.rerun()
 
-# ---- FULL FETCH ----
+# ---- FULL FETCH (triggered by rerun) ----
 if st.session_state.do_full_fetch:
     phrases = st.session_state.phrases
     years = st.session_state.years
@@ -489,6 +500,7 @@ if st.session_state.do_full_fetch:
             work_type,
             refresh_seed
         )
+        # Deduplicate and store in session
         seen_keys = set()
         flat_rows = []
         for year, rows in results_by_year.items():
@@ -500,7 +512,20 @@ if st.session_state.do_full_fetch:
         total = len(flat_rows)
         status.update(label=f"✅ Done! Found {total} unique records.", state="complete")
 
-    st.session_state.do_full_fetch = False
+    # Save results in session state
+    st.session_state.flat_rows = flat_rows
+    st.session_state.total_results = total
+    st.session_state.results_available = True
+    st.session_state.do_full_fetch = False  # reset so we don't fetch again on next rerun
+    st.rerun()  # rerun to show the preview (now results_available is True)
+
+# ---- PREVIEW AND EXPORT (shown when results_available is True) ----
+if st.session_state.results_available:
+    flat_rows = st.session_state.flat_rows
+    total = st.session_state.total_results
+    phrases = st.session_state.phrases
+    years = st.session_state.years
+    email = st.session_state.email
 
     if total > 0:
         all_rows = []
@@ -527,8 +552,10 @@ if st.session_state.do_full_fetch:
         colA, colB, colC = st.columns([1, 1, 3])
         if colA.button("✖️ Exclude All"):
             st.session_state.df_editor["Exclude"] = True
+            st.rerun()  # update the table immediately
         if colB.button("✅ Include All"):
             st.session_state.df_editor["Exclude"] = False
+            st.rerun()
 
         edited_df = st.data_editor(
             st.session_state.df_editor,
@@ -546,6 +573,7 @@ if st.session_state.do_full_fetch:
             hide_index=True,
         )
 
+        # Update session state with manual edits
         st.session_state.df_editor = edited_df
 
         excluded_indices = set()
@@ -579,14 +607,18 @@ if st.session_state.do_full_fetch:
     else:
         st.info("No results to preview.")
 
+    # Save to search history (only once per search)
+    # We'll check if this search is already recorded to avoid duplicates
     search_record = {
         "phrases": ", ".join(phrases),
         "years": f"{years[0]}-{years[-1]}",
         "timestamp": time.strftime("%Y-%m-%d %H:%M"),
         "total_results": total,
-        "work_type": work_type
+        "work_type": st.session_state.work_type
     }
-    st.session_state.search_history.append(search_record)
+    # Avoid duplicate entries if user refreshes the page
+    if not st.session_state.search_history or st.session_state.search_history[-1] != search_record:
+        st.session_state.search_history.append(search_record)
 
     if st.session_state.search_history:
         with st.expander("📜 Search History (this session only)"):
