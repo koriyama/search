@@ -325,7 +325,7 @@ def get_total_count(phrases, years, email, api_key, work_types, fetch_fn):
 # 6. STREAMLIT UI
 # ============================================================
 
-st.set_page_config(page_title="Search", layout="wide")
+st.set_page_config(page_title="LitFind", layout="wide")
 
 st.markdown(
     """
@@ -399,9 +399,16 @@ if not api_key:
 
 st.markdown(
     """
-    <div style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.2rem;">
-        <div style="width: 5px; height: 1.9rem; background-color: #2563eb; border-radius: 2px;"></div>
-        <h1 style="margin: 0; padding: 0;">Search</h1>
+    <div style="display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.2rem;">
+        <svg width="38" height="38" viewBox="0 0 40 40" style="flex-shrink: 0;">
+            <mask id="searchMask">
+                <rect width="40" height="40" fill="white"/>
+                <circle cx="17" cy="17" r="8" fill="none" stroke="black" stroke-width="3.5"/>
+                <line x1="23" y1="23" x2="31" y2="31" stroke="black" stroke-width="3.5" stroke-linecap="round"/>
+            </mask>
+            <rect width="40" height="40" rx="9" fill="#2563eb" mask="url(#searchMask)"/>
+        </svg>
+        <span style="font-size: 1.9rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1.3; color: #1a1a2e;">LitFind</span>
     </div>
     """,
     unsafe_allow_html=True,
