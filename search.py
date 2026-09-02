@@ -70,24 +70,17 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – now with api_key support
+# 2. SEARCH FUNCTION – now uses api_key from st.secrets
 # ============================================================
 
-def search_openalex_phrase_year(phrase, year, email=None, api_key=XrU3rOlofb0sL9AfiezFcp, per_page=200, 
+def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200, 
                                 session=None, sleep_between=0.1, work_type=None):
-    """
-    Query OpenAlex for a single phrase, restricted to one year.
-    Supports boolean operators: AND, OR, NOT (must be uppercase).
-    Optional work_type filters by document type.
-    Now includes api_key parameter for paid/prepaid accounts.
-    """
     session = session or requests.Session()
     results = []
     cursor = "*"
 
     encoded_phrase = urllib.parse.quote(phrase, safe='')
     
-    # Build the filter string dynamically
     filter_parts = [
         f'title_and_abstract.search:"{encoded_phrase}"',
         f'publication_year:{year}'
@@ -97,17 +90,15 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=XrU3rOlofb0sL9
     
     filter_string = ",".join(filter_parts)
     
-    # Build query parameters
     params = {
         "filter": filter_string,
         "per-page": per_page
     }
     
-    # Add email if provided (for polite pool)
     if email:
         params["mailto"] = email
     
-    # Add API key if provided (for paid/prepaid accounts)
+    # Use the API key if provided
     if api_key:
         params["api_key"] = api_key
 
@@ -168,7 +159,7 @@ def sanitize_for_excel(value):
         return ILLEGAL_CHARACTERS_RE.sub('', value)
     return value
 
-def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None, api_key=None, exclude_indices=None):
+def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None, exclude_indices=None):
     if exclude_indices is None:
         exclude_indices = set()
     
@@ -236,7 +227,7 @@ def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None
     settings_ws.cell(row=4, column=1, value="OpenAlex email (polite pool)")
     settings_ws.cell(row=4, column=2, value=email or "Not provided")
     settings_ws.cell(row=5, column=1, value="API Key used")
-    settings_ws.cell(row=5, column=2, value="Yes" if api_key else "No")
+    settings_ws.cell(row=5, column=2, value="Yes (server-side)" if st.secrets.get("OPENALEX_API_KEY") else "No")
     settings_ws.cell(row=6, column=1, value="Total unique records (exported)")
     settings_ws.cell(row=6, column=2, value=len(filtered_flat))
     settings_ws.column_dimensions["A"].width = 30
@@ -260,23 +251,35 @@ def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None
     wb.save(out_bytes)
 
 # ============================================================
-# 5. STREAMLIT USER INTERFACE
+# 5. STREAMLIT USER INTERFACE – Secure API Key handling
 # ============================================================
 
 st.set_page_config(page_title="Literature Search", layout="wide")
 st.title("📚 Literature Search")
 
-# ---- Initialize session state for email, API key, and search history ----
-if "email" not in st.session_state:
-    st.session_state.email = ""
-if "api_key" not in st.session_state:
-    st.session_state.api_key = ""
-if "search_history" not in st.session_state:
-    st.session_state.search_history = []
+# ---- SECURELY LOAD THE API KEY FROM SECRETS ----
+# This tries to get the key from the server environment (Streamlit Cloud secrets or local .streamlit/secrets.toml)
+api_key = st.secrets.get("OPENALEX_API_KEY")
+
+if not api_key:
+    # If running locally and secrets are missing, show a clear error and stop.
+    st.error("🚨 **API Key Missing!**")
+    st.error("""
+    The OpenAlex API Key is not configured. 
+    
+    **To fix this locally**: Create a folder named `.streamlit` in this directory, 
+    create a file named `secrets.toml` inside it, and add this line:
+    
+    `OPENALEX_API_KEY = "your_actual_key_here"`
+    
+    **For the live app**: Add the secret in the Streamlit Cloud dashboard 
+    (Settings → Secrets).
+    """)
+    st.stop()  # Stop the app from running further
 
 # ---- DISCLAIMER: Session-only storage ----
 st.info(
-    "ℹ️ **Session‑only storage**: Your email, API key, and search history are stored **only in your current browser session**. "
+    "ℹ️ **Session‑only storage**: Your email and search history are stored **only in your current browser session**. "
     "If you close this tab or refresh the page, they will be cleared. "
     "No data is stored on any server or shared with anyone."
 )
@@ -303,14 +306,19 @@ with st.expander("ℹ️ About this search tool", expanded=True):
     - Non‑ASCII characters (e.g., 守破離) are fully supported
     - You can filter results by document type using the dropdown below
     
-    ⚠️ **Rate limit & API Key:**
-    - Without an API key: $0.10/day free budget[reference:8]
-    - With a **free API key**: $1.00/day free budget (10x more)[reference:9]
-    - **Prepaid credits** require an API key to be used[reference:10]
-    - Get your free API key at [openalex.org/settings/api](https://openalex.org/settings/api)
+    ⚠️ **Rate limit warning:** 
+    - This app uses a server-side API key to increase your daily search quota.
+    - If you search very broadly (many years + many phrases), you may still hit the daily limit.
+    - Narrow your year range or combine terms with `OR` to reduce the number of requests.
     """)
 
 st.markdown("Enter your search phrases below. Use **uppercase** `AND`, `OR`, `NOT` for boolean logic.")
+
+# Initialize session state for email and search history
+if "email" not in st.session_state:
+    st.session_state.email = ""
+if "search_history" not in st.session_state:
+    st.session_state.search_history = []
 
 with st.form("search_form"):
     col1, col2 = st.columns(2)
@@ -338,16 +346,9 @@ with st.form("search_form"):
             value=st.session_state.email,
             help="OPTIONAL but recommended: Use your real email address for better performance."
         )
-        st.caption("Adding your email gives you access to the 'polite pool' for better performance.[reference:11]")
-        
-        # ---- NEW: API Key input ----
-        api_key = st.text_input(
-            "🔑 OpenAlex API Key (for paid/prepaid accounts)",
-            value=st.session_state.api_key,
-            type="password",
-            help="REQUIRED for prepaid credits. Get your free key at openalex.org/settings/api"
-        )
-        st.caption("Required to use prepaid credits. Without it, you're limited to the free daily budget.[reference:12]")
+        st.caption("Adding your email gives you access to the 'polite pool' for better performance.")
+        # ---- API Key field is REMOVED ----
+        st.success("🔒 **API Key: Configured securely** (server-side)")
 
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
@@ -357,15 +358,8 @@ def run_collection(phrases_tuple, years_tuple, email, api_key, work_type):
     return collect(list(phrases_tuple), list(years_tuple), email=email, api_key=api_key, work_type=work_type)
 
 if submitted:
-    # ---- Save to session state ----
+    # ---- Save email to session state ----
     st.session_state.email = email
-    st.session_state.api_key = api_key
-    
-    # ---- Validate inputs ----
-    if not api_key:
-        st.warning("⚠️ **No API Key provided.**")
-        st.warning("You are limited to the free daily budget ($0.10/day). To use prepaid credits, please enter your API Key.")
-        # Allow the search to proceed, but warn the user
     
     phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
     years = list(range(int(start_year), int(end_year) + 1))
@@ -375,6 +369,7 @@ if submitted:
         st.stop()
 
     with st.status("⏳ Searching OpenAlex...", expanded=True) as status:
+        # The api_key is passed from the secret we loaded at the top
         results_by_year = run_collection(tuple(phrases), tuple(years), email, api_key, work_type)
         total = sum(len(v) for v in results_by_year.values())
         status.update(label=f"✅ Done! Found {total} unique records.", state="complete")
@@ -385,8 +380,7 @@ if submitted:
         "years": f"{start_year}-{end_year}",
         "timestamp": time.strftime("%Y-%m-%d %H:%M"),
         "total_results": total,
-        "work_type": work_type,
-        "api_key_used": "Yes" if api_key else "No"
+        "work_type": work_type
     }
     st.session_state.search_history.append(search_record)
 
@@ -447,7 +441,6 @@ if submitted:
                 years, 
                 output, 
                 email=email,
-                api_key=api_key,
                 exclude_indices=excluded_indices
             )
             output.seek(0)
@@ -462,5 +455,5 @@ if submitted:
 if st.session_state.search_history:
     with st.expander("📜 Search History (this session only)"):
         for i, record in enumerate(reversed(st.session_state.search_history)):
-            st.write(f"**{i+1}.** {record['timestamp']} – **{record['phrases']}** ({record['years']}) → {record['total_results']} results | Type: {record['work_type']} | API Key: {record['api_key_used']}")
+            st.write(f"**{i+1}.** {record['timestamp']} – **{record['phrases']}** ({record['years']}) → {record['total_results']} results | Type: {record['work_type']}")
         st.caption("This history is stored only in your browser session and will be cleared when you close the tab.")
