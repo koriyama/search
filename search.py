@@ -536,7 +536,7 @@ with st.container():
 
     # ---- DISPLAY SESSIONS AND RESULTS ----
     if st.session_state.search_sessions:
-        # ---- Session management expander (always expanded) ----
+        # ---- Session management expander ----
         with st.expander("📋 Search Sessions", expanded=True):
             st.write("Select which session to view, or merge multiple sessions. Newest sessions are at the top.")
 
@@ -581,11 +581,10 @@ with st.container():
                         for idx in selected_indices:
                             merged_rows.extend(st.session_state.search_sessions[idx]["flat_rows"])
                         merged_rows = merge_flat_rows([], merged_rows)
-                        # Build a combined phrase list
                         combined_phrases = []
                         for idx in selected_indices:
                             combined_phrases.extend(st.session_state.search_sessions[idx]["phrases"])
-                        combined_phrases = list(dict.fromkeys(combined_phrases))  # deduplicate
+                        combined_phrases = list(dict.fromkeys(combined_phrases))
                         new_session = {
                             "id": datetime.now().strftime("%Y%m%d_%H%M%S"),
                             "phrases": combined_phrases,
@@ -688,7 +687,7 @@ with st.container():
                     column_config={
                         "Exclude": st.column_config.CheckboxColumn(
                             "Exclude", 
-                            width=80,   # fixed width to prevent cutting off text
+                            width=80,
                             help="Check to exclude this row from export"
                         ),
                         "Year": st.column_config.NumberColumn("Year", width="small"),
@@ -758,6 +757,7 @@ with st.container():
         else:
             st.info("No session selected. Run a search to begin.")
     else:
+        # ---- FILL THE EMPTY CARD WITH A HELPFUL MESSAGE ----
         st.info("No searches yet. Fill in the form above and click 'Run Search'.")
 
     # Close the card container
