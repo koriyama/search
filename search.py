@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 import time
 import urllib.parse
-from io import BytesIO
+from io import BytesIO, StringIO
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
@@ -178,10 +178,15 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT – exports the merged set (list of (year, row))
+# 4. EXPORT FUNCTIONS – now support both Excel and CSV
 # ============================================================
 
-def export_to_excel_bytes(merged_rows, all_phrases, all_years, out_bytes, email=None):
+def sanitize_for_excel(value):
+    if isinstance(value, str):
+        return re.sub(r'[\000-\010]|[\013-\014]|[\016-\037]', '', value)
+    return value
+
+def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None):
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -260,15 +265,29 @@ def export_to_excel_bytes(merged_rows, all_phrases, all_years, out_bytes, email=
     for i, w in enumerate([50, 30, 10, 35], start=1):
         missing_ws.column_dimensions[get_column_letter(i)].width = w
 
-    wb.save(out_bytes)
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
 
-# sanitize helper
-ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
-
-def sanitize_for_excel(value):
-    if isinstance(value, str):
-        return ILLEGAL_CHARACTERS_RE.sub('', value)
-    return value
+def export_to_csv_bytes(merged_rows):
+    # Build a simple CSV with headers
+    data = []
+    for year, row in merged_rows:
+        data.append({
+            "Year": year,
+            "Title": row["title"],
+            "Authors": row["authors"],
+            "Journal": row["journal"],
+            "Abstract": row["abstract"],
+            "DOI": row["doi_url"],
+            "PDF URL": row["pdf_url"],
+            "Matched Phrases": "; ".join(row.get("matched_phrases", []))
+        })
+    df = pd.DataFrame(data)
+    out = StringIO()
+    df.to_csv(out, index=False)
+    return out.getvalue().encode('utf-8')
 
 # ============================================================
 # 5. PRE‑FLIGHT COUNT
@@ -328,7 +347,7 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     
     ℹ️ **Session‑only storage**: Your email and search history are stored **only in your current browser session**. If you close this tab or refresh the page, they will be cleared. No data is stored on any server or shared with anyone.
     
-    🔄 **How selection works**: Each session has its own preview table with **Include** checkboxes. After marking rows, click the **"Apply to Merged Set"** button below all tables. This collects all included rows from all sessions, removes duplicates, and builds a merged set for export. You can later refine any session's selections and re‑apply.
+    🔄 **How selection works**: Each search has its own preview table with **Include** checkboxes. After marking rows, click the **"Apply Selected Records"** button below all tables. This collects all included rows from all searches, removes duplicates, and builds a download list. You can later refine any search's selections and re‑apply.
     """)
 
 # ---- Session state ----
@@ -341,7 +360,7 @@ if "do_full_fetch" not in st.session_state:
 if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
 if "merged_rows" not in st.session_state:
-    st.session_state.merged_rows = []  # list of (year, row) – the merged set
+    st.session_state.merged_rows = []  # list of (year, row) – the download list
 
 # ---- FORM ----
 with st.form("search_form"):
@@ -356,12 +375,14 @@ with st.form("search_form"):
         end_year = st.number_input("End Year", min_value=1900, max_value=2030, value=2026, step=1)
         force_refresh = st.checkbox("🔄 Force Refresh (Ignore Cache)", value=False)
     with col2:
+        # Email field – now optional, with a gentle reminder
         email = st.text_input(
             "📧 Recommended: Your Email (for OpenAlex polite pool)",
             value=st.session_state.email,
-            help="Use your real email address for higher rate limits."
+            help="Optional, but using a real email gives you 10x more daily searches."
         )
-        st.caption("**Use of a real email gives you 10x more daily searches.**")
+        st.caption("**Providing an email is optional** – without it, you'll have a lower daily quota.")
+        
         work_type_options = ["All types", "article", "book", "book-chapter", "dataset", 
                              "dissertation", "preprint", "conference-paper", "conference-abstract",
                              "book-review", "report", "editorial", "letter", "erratum"]
@@ -377,9 +398,6 @@ with st.form("search_form"):
 
 # ---- Handle submission ----
 if submitted:
-    if not email or email.strip() == "":
-        st.error("❌ **Please enter your email address.**")
-        st.stop()
     phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
     if not phrases:
         st.error("Please enter at least one search phrase.")
@@ -417,7 +435,7 @@ if submitted:
         st.session_state.do_full_fetch = True
         st.rerun()
 
-# ---- Fetch and create new session (insert at beginning) ----
+# ---- Fetch and create new search (insert at beginning) ----
 if st.session_state.do_full_fetch:
     phrases = st.session_state.phrases
     years = st.session_state.years
@@ -445,7 +463,7 @@ if st.session_state.do_full_fetch:
         total = len(flat_rows)
         status.update(label=f"✅ Fetched {total} records.", state="complete")
 
-    new_session = {
+    new_search = {
         "id": datetime.now().strftime("%Y%m%d_%H%M%S"),
         "phrases": phrases,
         "years": years,
@@ -455,16 +473,16 @@ if st.session_state.do_full_fetch:
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "included_indices": set()  # empty by default
     }
-    st.session_state.search_sessions.insert(0, new_session)
+    st.session_state.search_sessions.insert(0, new_search)
     st.session_state.do_full_fetch = False
     st.rerun()
 
-# ---- Display all sessions' preview tables (stacked) ----
+# ---- Display all searches' preview tables (stacked) ----
 if st.session_state.search_sessions:
-    st.subheader("📋 All Search Sessions (newest first)")
-    st.caption("For each session, tick the rows you want to include. Then click the **Apply** button at the bottom to build the merged set.")
+    st.subheader("📋 All Searches (newest first)")
+    st.caption("For each search, tick the rows you want to include. Then click the **Apply** button at the bottom to build the download list.")
 
-    # We'll store the edited dataframes in session state per session ID
+    # We'll store the edited dataframes in session state per search ID
     for idx, sess in enumerate(st.session_state.search_sessions):
         flat_rows = sess["flat_rows"]
         total = sess["total"]
@@ -487,13 +505,14 @@ if st.session_state.search_sessions:
             })
         df = pd.DataFrame(all_rows)
 
-        # Use a key per session
+        # Use a key per search
         editor_key = f"include_editor_{sess['id']}"
         if f"df_{sess['id']}" not in st.session_state:
             st.session_state[f"df_{sess['id']}"] = df
 
-        with st.expander(f"Session {idx+1}: {sess['phrases'][0][:60]}… ({total} records, {len(included_indices)} included)", expanded=(idx==0)):
-            # Show include buttons per session
+        # Expand first two searches by default (or all if you prefer)
+        with st.expander(f"Search {idx+1}: {sess['phrases'][0][:60]}… ({total} records, {len(included_indices)} included)", expanded=(idx < 2)):
+            # Show include buttons per search
             colA, colB = st.columns([1, 1])
             if colA.button(f"✅ Include All", key=f"include_all_{sess['id']}"):
                 df_local = st.session_state[f"df_{sess['id']}"].copy()
@@ -515,7 +534,7 @@ if st.session_state.search_sessions:
                     "Include": st.column_config.CheckboxColumn(
                         "Include", 
                         width=80,
-                        help="Check to include this row in the merged set"
+                        help="Check to include this row in the download list"
                     ),
                     "Year": st.column_config.NumberColumn("Year", width="small"),
                     "Title": st.column_config.TextColumn("Title", width="large"),
@@ -532,7 +551,7 @@ if st.session_state.search_sessions:
                 hide_index=True,
                 key=editor_key
             )
-            # Update session's included_indices from edited_df
+            # Update search's included_indices from edited_df
             new_included = set()
             for row_idx, row in edited_df.iterrows():
                 if row["Include"]:
@@ -541,12 +560,10 @@ if st.session_state.search_sessions:
             # Save the edited df back to session state
             st.session_state[f"df_{sess['id']}"] = edited_df
 
-            st.caption(f"📌 {len(new_included)} rows included from this session.")
+            st.caption(f"📌 {len(new_included)} rows included from this search.")
 
-    # ---- Apply button and merged set ----
-    st.markdown("---")
-    if st.button("🔄 Apply Selected Records to Merged Set", use_container_width=True):
-        # Collect all included rows from all sessions
+    # ---- Apply button (no horizontal ruler) ----
+    if st.button("🔄 Apply Selected Records", use_container_width=True):
         all_included = []
         for sess in st.session_state.search_sessions:
             included = sess.get("included_indices", set())
@@ -562,71 +579,82 @@ if st.session_state.search_sessions:
                 seen.add(key)
                 merged.append((year, r))
         st.session_state.merged_rows = merged
-        st.success(f"✅ Merged set updated: {len(merged)} unique records.")
+        st.success(f"✅ Download list updated: {len(merged)} unique records.")
         st.rerun()
 
-    # ---- Display merged set ----
+    # ---- Display Download List ----
     if st.session_state.merged_rows:
         merged_rows = st.session_state.merged_rows
-        st.subheader(f"📦 Merged Set – {len(merged_rows)} unique included records")
-        st.caption("This is the union of all rows you marked 'Include' across all sessions. Download this set below.")
+        st.subheader(f"📦 Download List – {len(merged_rows)} unique included records")
+        st.caption("This is the union of all rows you marked 'Include' across all searches. Download this set below.")
 
-        # Quick preview of merged
-        with st.expander("Preview merged records", expanded=False):
-            merged_df = pd.DataFrame([{"Year": y, "Title": r["title"]} for y, r in merged_rows])
-            st.dataframe(merged_df, use_container_width=True, height=200)
+        # Quick preview with row numbers starting from 1
+        preview_data = []
+        for i, (year, r) in enumerate(merged_rows, start=1):
+            preview_data.append({
+                "No.": i,
+                "Year": year,
+                "Title": r["title"]
+            })
+        preview_df = pd.DataFrame(preview_data)
+        st.dataframe(preview_df, use_container_width=True, height=200)
 
-        # ---- Download button with corrected filename ----
-        col_name, col_btn = st.columns([2, 1])
+        # ---- Single‑click download with format selector ----
+        col_name, col_format, col_btn = st.columns([3, 1, 1])
         with col_name:
-            # Build filename from first session's phrases
+            # Build filename from first search's phrases
             if st.session_state.search_sessions:
                 first_phrases = st.session_state.search_sessions[0]["phrases"]
-                # Clean the summary: remove quotes, replace spaces with underscores, limit length
                 summary = "_".join(first_phrases)[:50].replace(" ", "_").replace('"', '').replace("'", "")
-                # Remove any problematic characters
                 summary = re.sub(r'[^a-zA-Z0-9_]', '', summary)
-                default_filename = f"{datetime.now().strftime('%Y-%m-%d')}_{summary}.xlsx"
+                default_filename = f"{datetime.now().strftime('%Y-%m-%d')}_{summary}"
             else:
-                default_filename = f"{datetime.now().strftime('%Y-%m-%d')}_search_results.xlsx"
+                default_filename = f"{datetime.now().strftime('%Y-%m-%d')}_download"
             filename = st.text_input(
-                "📁 Filename for download",
+                "📁 Filename (without extension)",
                 value=default_filename,
-                help="Customise the file name before downloading.",
-                key="merged_filename"
+                help="Customise the base file name before downloading.",
+                key="download_filename"
+            )
+        with col_format:
+            format_choice = st.radio(
+                "Format",
+                options=["Excel (.xlsx)", "CSV (.csv)"],
+                index=0,
+                key="download_format"
             )
         with col_btn:
+            st.write("")  # vertical spacer
             st.write("")
-            st.write("")
-            if st.button("⬇️ Download Merged Excel", use_container_width=True, key="download_merged"):
-                with st.spinner("Generating Excel..."):
-                    # Gather all phrases and years from all sessions
-                    all_phrases = []
-                    all_years = []
-                    for sess in st.session_state.search_sessions:
-                        all_phrases.extend(sess["phrases"])
-                        all_years.extend(sess["years"])
-                    all_phrases = list(dict.fromkeys(all_phrases))
-                    all_years = sorted(set(all_years))
-                    output = BytesIO()
-                    export_to_excel_bytes(
-                        merged_rows,
-                        all_phrases,
-                        all_years,
-                        output,
-                        email=st.session_state.email
-                    )
-                    output.seek(0)
-                    st.download_button(
-                        label="📥 Click to save",
-                        data=output,
-                        file_name=filename if filename.strip() else default_filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        key="merged_download_btn"
-                    )
+            if st.button("⬇️ Download File", use_container_width=True, key="download_btn"):
+                # Prepare data
+                all_phrases = []
+                all_years = []
+                for sess in st.session_state.search_sessions:
+                    all_phrases.extend(sess["phrases"])
+                    all_years.extend(sess["years"])
+                all_phrases = list(dict.fromkeys(all_phrases))
+                all_years = sorted(set(all_years))
+
+                if format_choice == "Excel (.xlsx)":
+                    file_ext = ".xlsx"
+                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    data = export_to_excel_bytes(merged_rows, all_phrases, all_years, st.session_state.email)
+                else:
+                    file_ext = ".csv"
+                    mime = "text/csv"
+                    data = export_to_csv_bytes(merged_rows)
+
+                st.download_button(
+                    label="📥 Click to save",
+                    data=data,
+                    file_name=f"{filename.strip() if filename.strip() else default_filename}{file_ext}",
+                    mime=mime,
+                    use_container_width=True,
+                    key="final_download"
+                )
     else:
-        st.info("No records in merged set yet. Mark rows as 'Include' in any session and click Apply.")
+        st.info("No records in download list yet. Mark rows as 'Include' in any search and click Apply.")
 
 else:
     st.info("No searches yet. Fill in the form above and click 'Run Search'.")
