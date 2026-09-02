@@ -72,12 +72,16 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – unchanged
+# 2. SEARCH FUNCTION – updated to handle multiple work types
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200, 
-                                session=None, sleep_between=0.1, work_type=None,
+                                session=None, sleep_between=0.1, work_types=None,
                                 just_count=False):
+    """
+    work_types: list of type strings, e.g. ["article", "book-chapter"]
+    If empty or ["All types"], no type filter is applied.
+    """
     session = session or requests.Session()
     cursor = "*"
     count = 0
@@ -86,8 +90,10 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         f'title_and_abstract.search:"{phrase}"',
         f'publication_year:{year}'
     ]
-    if work_type and work_type != "All types":
-        filter_parts.append(f'type:{work_type}')
+    # Handle work_types filter
+    if work_types and "All types" not in work_types:
+        type_filter = "|".join(work_types)
+        filter_parts.append(f'type:{type_filter}')
     
     filter_string = ",".join(filter_parts)
     
@@ -145,10 +151,10 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 3. COLLECT FUNCTION – unchanged
+# 3. COLLECT FUNCTION – updated to accept work_types list
 # ============================================================
 
-def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_type=None, 
+def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_types=None, 
             fetch_fn=search_openalex_phrase_year):
     by_year = {y: {} for y in years}
     debug_info = {}
@@ -157,7 +163,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
         for phrase in phrases:
             rows, count, debug_url = fetch_fn(
                 phrase, year, email=email, api_key=api_key, 
-                sleep_between=sleep_between, work_type=work_type,
+                sleep_between=sleep_between, work_types=work_types,
                 just_count=False
             )
             debug_info[(phrase, year)] = {
@@ -274,15 +280,15 @@ def export_to_excel_bytes(flat_rows, phrases, years, out_bytes, email=None, excl
     wb.save(out_bytes)
 
 # ============================================================
-# 5. PRE‑FLIGHT COUNT FUNCTION
+# 5. PRE‑FLIGHT COUNT FUNCTION – updated for work_types
 # ============================================================
 
-def get_total_count(phrases, years, email, api_key, work_type, fetch_fn):
+def get_total_count(phrases, years, email, api_key, work_types, fetch_fn):
     total = 0
     for year in years:
         for phrase in phrases:
             count, _ = fetch_fn(phrase, year, email=email, api_key=api_key,
-                                work_type=work_type, just_count=True)
+                                work_types=work_types, just_count=True)
             total += count
     return total
 
@@ -299,7 +305,7 @@ if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
-# ---- Custom CSS: float the app with a border, reduce header spacing ----
+# ---- Custom CSS: floating card, reduced header spacing, fix cut-off ----
 st.markdown("""
 <style>
     /* Main container: floating card */
@@ -311,10 +317,15 @@ st.markdown("""
         border: 1px solid #e6e9ef;
         margin-bottom: 2rem;
     }
-    /* Reduce top padding */
+    /* Reduce top padding so header isn't cut off */
     .block-container {
         padding-top: 0.5rem;
         padding-bottom: 1rem;
+    }
+    /* Ensure h1 has enough top margin */
+    h1 {
+        margin-top: 0px;
+        margin-bottom: 0.5rem;
     }
     /* Tighten button gaps */
     div[data-testid="column"]:nth-child(1) {
@@ -322,11 +333,6 @@ st.markdown("""
     }
     div[data-testid="column"]:nth-child(2) {
         padding-left: 2px;
-    }
-    /* Make the header smaller */
-    h1 {
-        margin-top: -10px;
-        margin-bottom: 0.5rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -386,8 +392,8 @@ if "phrases" not in st.session_state:
     st.session_state.phrases = []
 if "years" not in st.session_state:
     st.session_state.years = []
-if "work_type" not in st.session_state:
-    st.session_state.work_type = "All types"
+if "work_types" not in st.session_state:
+    st.session_state.work_types = ["All types"]
 if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
 if "df_editor" not in st.session_state:
@@ -405,7 +411,7 @@ with st.form("search_form"):
     with col1:
         phrases_input = st.text_area(
             "🔍 Search Phrases",
-            value='''"epistemic cognition" AND (EFL OR "English as a foreign language")''',   # new default
+            value='"epistemic cognition" AND ( EFL OR ESL )',
             help=(
                 "Each line is a separate query. Use uppercase AND, OR, NOT. "
                 "Put double quotes around exact phrases (e.g., \"climate change\")."
@@ -414,14 +420,19 @@ with st.form("search_form"):
         start_year = st.number_input("Start Year", min_value=1900, max_value=2030, value=2020, step=1)
         end_year = st.number_input("End Year", min_value=1900, max_value=2030, value=2026, step=1)
         
-        work_type = st.selectbox(
-            "📚 Work Type (optional)",
-            options=["All types", "article", "book", "book-chapter", "dataset", 
-                     "dissertation", "preprint", "conference-paper", "conference-abstract",
-                     "book-review", "report", "editorial", "letter", "erratum"],
-            index=0,
-            help="Filter results by document type. 'All types' searches everything OpenAlex has."
+        # Work type: now a multi-select
+        work_type_options = ["All types", "article", "book", "book-chapter", "dataset", 
+                             "dissertation", "preprint", "conference-paper", "conference-abstract",
+                             "book-review", "report", "editorial", "letter", "erratum"]
+        work_types = st.multiselect(
+            "📚 Work Types (optional – select multiple)",
+            options=work_type_options,
+            default=["All types"],
+            help="Filter results by one or more document types. 'All types' means no filter."
         )
+        # If "All types" is selected, we ignore other selections
+        if "All types" in work_types:
+            work_types = ["All types"]  # ensure only that one
         
         force_refresh = st.checkbox(
             "🔄 Force Refresh (Ignore Cache)", 
@@ -436,7 +447,7 @@ with st.form("search_form"):
             help="⚠️ **REQUIRED for best performance.** Use your real email address (e.g., name@university.edu). Without it, you'll have only 10 requests per day."
         )
         st.caption("**Real email = 10x more daily searches.**")
-        st.success("🔒 **API Key: Configured securely** (server-side)")
+        # Removed the green "API Key: Configured securely" box
 
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
@@ -455,7 +466,7 @@ if submitted:
 
     st.session_state.phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
     st.session_state.years = list(range(int(start_year), int(end_year) + 1))
-    st.session_state.work_type = work_type
+    st.session_state.work_types = work_types
     st.session_state.force_refresh = force_refresh
     st.session_state.do_full_fetch = False
     st.session_state.force_fetch = False
@@ -472,7 +483,7 @@ if submitted:
                 st.session_state.years,
                 email,
                 api_key,
-                work_type,
+                st.session_state.work_types,
                 search_openalex_phrase_year
             )
             st.session_state.preflight_count = total_count
@@ -506,13 +517,13 @@ if submitted:
 if st.session_state.do_full_fetch:
     phrases = st.session_state.phrases
     years = st.session_state.years
-    work_type = st.session_state.work_type
+    work_types = st.session_state.work_types
     email = st.session_state.email
     force_refresh = st.session_state.force_refresh
 
     @st.cache_data(show_spinner=False)
-    def run_collection_cached(phrases_tuple, years_tuple, email, api_key, work_type, refresh_seed):
-        return collect(list(phrases_tuple), list(years_tuple), email=email, api_key=api_key, work_type=work_type)
+    def run_collection_cached(phrases_tuple, years_tuple, email, api_key, work_types_tuple, refresh_seed):
+        return collect(list(phrases_tuple), list(years_tuple), email=email, api_key=api_key, work_types=list(work_types_tuple))
 
     with st.status("⏳ Fetching full records...", expanded=True) as status:
         refresh_seed = random.randint(0, 999999) if force_refresh else 0
@@ -521,7 +532,7 @@ if st.session_state.do_full_fetch:
             tuple(years),
             email,
             api_key,
-            work_type,
+            tuple(work_types),
             refresh_seed
         )
         seen_keys = set()
@@ -587,7 +598,7 @@ if st.session_state.results_available:
             column_config={
                 "Exclude": st.column_config.CheckboxColumn(
                     "Exclude", 
-                    width="medium",   # enough space for the label
+                    width="small",   # narrow column
                     help="Check to exclude this row from export"
                 ),
                 "Year": st.column_config.NumberColumn("Year", width="small"),
@@ -621,7 +632,6 @@ if st.session_state.results_available:
         st.markdown("---")
         col_name, col_btn = st.columns([2, 1])
         with col_name:
-            # Auto‑generate filename suggestion
             default_filename = f"{datetime.now().strftime('%Y-%m-%d')}_{phrases[0][:40].replace(' ', '_')}.xlsx"
             filename = st.text_input(
                 "📁 Filename for download",
@@ -629,7 +639,6 @@ if st.session_state.results_available:
                 help="Customize the file name before downloading."
             )
         with col_btn:
-            # The download button now uses the filename from the input
             st.write("")  # vertical spacer
             st.write("") 
             if st.button("⬇️ Download Excel File", use_container_width=True):
@@ -660,7 +669,7 @@ if st.session_state.results_available:
         "years": f"{years[0]}-{years[-1]}",
         "timestamp": time.strftime("%Y-%m-%d %H:%M"),
         "total_results": total,
-        "work_type": st.session_state.work_type
+        "work_types": st.session_state.work_types
     }
     if not st.session_state.search_history or st.session_state.search_history[-1] != search_record:
         st.session_state.search_history.append(search_record)
@@ -668,5 +677,5 @@ if st.session_state.results_available:
     if st.session_state.search_history:
         with st.expander("📜 Search History (this session only)"):
             for i, record in enumerate(reversed(st.session_state.search_history)):
-                st.write(f"**{i+1}.** {record['timestamp']} – **{record['phrases']}** ({record['years']}) → {record['total_results']} results | Type: {record['work_type']}")
+                st.write(f"**{i+1}.** {record['timestamp']} – **{record['phrases']}** ({record['years']}) → {record['total_results']} results | Types: {', '.join(record['work_types'])}")
             st.caption("This history is stored only in your browser session and will be cleared when you close the tab.")
