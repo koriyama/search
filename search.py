@@ -8,6 +8,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 import re
+import random
 
 # ============================================================
 # 1. CORE FUNCTIONS – unchanged
@@ -70,7 +71,7 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – now uses api_key from st.secrets
+# 2. SEARCH FUNCTION – now returns both results and debug info
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200, 
@@ -78,6 +79,7 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
     session = session or requests.Session()
     results = []
     cursor = "*"
+    first_page_meta_count = None  # To store the total count from OpenAlex
 
     encoded_phrase = urllib.parse.quote(phrase, safe='')
     
@@ -98,9 +100,14 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
     if email:
         params["mailto"] = email
     
-    # Use the API key if provided
     if api_key:
         params["api_key"] = api_key
+
+    # ---- Build the exact URL for debugging ----
+    # We'll construct a temporary URL to show the user if results are 0
+    temp_params = dict(params)
+    temp_params["cursor"] = "*"
+    debug_url = f"{OPENALEX_URL}?{urllib.parse.urlencode(temp_params)}"
 
     while cursor:
         params["cursor"] = cursor
@@ -115,6 +122,11 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
             raise
 
         data = resp.json()
+        
+        # Capture the total count from the first page
+        if first_page_meta_count is None:
+            first_page_meta_count = data.get("meta", {}).get("count", 0)
+
         for work in data.get("results", []):
             results.append(normalize_work(work))
         
@@ -123,19 +135,30 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
             break
         time.sleep(sleep_between)
 
-    return results
+    return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 3. COLLECT FUNCTION – updated to pass api_key
+# 3. COLLECT FUNCTION – updated to handle debug info
 # ============================================================
 
 def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_type=None, 
             fetch_fn=search_openalex_phrase_year):
     by_year = {y: {} for y in years}
+    debug_info = {}  # Store debug info for each phrase/year
+    
     for year in years:
         for phrase in phrases:
-            rows = fetch_fn(phrase, year, email=email, api_key=api_key, 
-                           sleep_between=sleep_between, work_type=work_type)
+            rows, count, debug_url = fetch_fn(
+                phrase, year, email=email, api_key=api_key, 
+                sleep_between=sleep_between, work_type=work_type
+            )
+            
+            # Store debug info
+            debug_info[(phrase, year)] = {
+                "count": count,
+                "url": debug_url
+            }
+            
             for row in rows:
                 key = row["id"] or row["doi_url"] or f"{row['title'].strip().lower()}|{row['year']}"
                 if key in by_year[year]:
@@ -146,10 +169,10 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
                     row = dict(row)
                     row["matched_phrases"] = [phrase]
                     by_year[year][key] = row
-    return {year: list(rows.values()) for year, rows in by_year.items()}
+    return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT ADAPTED TO BYTESIO – with exclude_indices
+# 4. EXPORT ADAPTED TO BYTESIO
 # ============================================================
 
 ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
@@ -216,7 +239,6 @@ def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None
             ws.column_dimensions[get_column_letter(i)].width = w
         ws.freeze_panes = "A2"
 
-    # Settings sheet
     settings_ws = wb.create_sheet(title="Search Settings")
     settings_ws.cell(row=1, column=1, value="Setting").font = bold
     settings_ws.cell(row=1, column=2, value="Value").font = bold
@@ -233,7 +255,6 @@ def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None
     settings_ws.column_dimensions["A"].width = 30
     settings_ws.column_dimensions["B"].width = 60
 
-    # Missing PDFs sheet
     missing_ws = wb.create_sheet(title="Missing PDFs")
     for col_idx, h in enumerate(["Title", "Authors", "Year", "DOI"], start=1):
         missing_ws.cell(row=1, column=col_idx, value=h).font = bold
@@ -251,41 +272,34 @@ def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None
     wb.save(out_bytes)
 
 # ============================================================
-# 5. STREAMLIT USER INTERFACE – Secure API Key handling
+# 5. STREAMLIT USER INTERFACE
 # ============================================================
 
 st.set_page_config(page_title="Literature Search", layout="wide")
 st.title("📚 Literature Search")
 
-# ---- SECURELY LOAD THE API KEY FROM SECRETS ----
-# This tries to get the key from the server environment (Streamlit Cloud secrets or local .streamlit/secrets.toml)
+# ---- SECURELY LOAD THE API KEY ----
 api_key = st.secrets.get("OPENALEX_API_KEY")
 
 if not api_key:
-    # If running locally and secrets are missing, show a clear error and stop.
-    st.error("🚨 **API Key Missing!**")
-    st.error("""
-    The OpenAlex API Key is not configured. 
-    
-    **To fix this locally**: Create a folder named `.streamlit` in this directory, 
-    create a file named `secrets.toml` inside it, and add this line:
-    
-    `OPENALEX_API_KEY = "your_actual_key_here"`
-    
-    **For the live app**: Add the secret in the Streamlit Cloud dashboard 
-    (Settings → Secrets).
-    """)
-    st.stop()  # Stop the app from running further
+    st.error("🚨 **API Key Missing!** ...")
+    st.stop()
 
-# ---- DISCLAIMER: Session-only storage ----
+# ---- Session state init ----
+if "email" not in st.session_state:
+    st.session_state.email = ""
+if "search_history" not in st.session_state:
+    st.session_state.search_history = []
+
+# ---- DISCLAIMER ----
 st.info(
     "ℹ️ **Session‑only storage**: Your email and search history are stored **only in your current browser session**. "
     "If you close this tab or refresh the page, they will be cleared. "
     "No data is stored on any server or shared with anyone."
 )
 
-# ---- OpenAlex description ----
-with st.expander("ℹ️ About this search tool", expanded=True):
+# ---- OpenAlex description (now MINIMISED by default) ----
+with st.expander("ℹ️ About this search tool", expanded=False):
     st.markdown("""
     This tool searches **OpenAlex** – a free, open index of the world's research ecosystem.
     
@@ -301,24 +315,33 @@ with st.expander("ℹ️ About this search tool", expanded=True):
     - It includes **datasets, software, and other research objects** beyond just traditional publications
     
     **Search tips:**
-    - Use **uppercase** `AND`, `OR`, `NOT` for boolean logic (e.g., `"climate AND change NOT denial"`)
+    - Use **uppercase** `AND`, `OR`, `NOT` for boolean logic
     - Each phrase is searched as an exact match in title and abstract
     - Non‑ASCII characters (e.g., 守破離) are fully supported
     - You can filter results by document type using the dropdown below
     
-    ⚠️ **Rate limit warning:** 
-    - This app uses a server-side API key to increase your daily search quota.
-    - If you search very broadly (many years + many phrases), you may still hit the daily limit.
-    - Narrow your year range or combine terms with `OR` to reduce the number of requests.
+    ⚠️ **Cache & Rate limits:** 
+    - The app caches results to speed up repeated searches. 
+    - If you are getting **0 results unexpectedly**, check the **"Force Refresh"** box below and search again.
+    - If it still returns 0, the app will now show you the exact URL it called so you can test it manually.
     """)
 
-st.markdown("Enter your search phrases below. Use **uppercase** `AND`, `OR`, `NOT` for boolean logic.")
+# ---- UPDATED HELP TEXT with mini-tutorial ----
+search_help_text = """
+**Mini‑tutorial for boolean search (use UPPERCASE operators):**
 
-# Initialize session state for email and search history
-if "email" not in st.session_state:
-    st.session_state.email = ""
-if "search_history" not in st.session_state:
-    st.session_state.search_history = []
+- `"climate AND change"` → finds works containing **both** words
+- `"epistemic cognition OR personal epistemology"` → finds works containing **either** phrase
+- `"climate change NOT denial"` → finds works about climate change that **do not** mention denial
+
+**Non‑ASCII characters** (e.g., 守破離) work fine.
+
+**Combine multiple terms:** 
+- If you want to search widely, put `"climate OR weather OR atmosphere"` on one line.
+- If you want multiple independent searches, put each on a new line.
+"""
+
+st.markdown("Enter your search phrases below. Use **uppercase** `AND`, `OR`, `NOT` for boolean logic.")
 
 with st.form("search_form"):
     col1, col2 = st.columns(2)
@@ -326,9 +349,10 @@ with st.form("search_form"):
         phrases_input = st.text_area(
             "🔍 Search Phrases (one per line)",
             value="epistemic cognition\npersonal epistemology\nepistemological beliefs",
-            help="Each phrase is searched as an exact match. Use AND, OR, NOT (uppercase) for boolean logic."
+            help=search_help_text  # <--- Updated tutorial here
         )
-        start_year = st.number_input("Start Year", min_value=1900, max_value=2030, value=2000, step=1)
+        # ---- DEFAULT YEAR RANGE changed to 2020-2026 ----
+        start_year = st.number_input("Start Year", min_value=1900, max_value=2030, value=2020, step=1)
         end_year = st.number_input("End Year", min_value=1900, max_value=2030, value=2026, step=1)
         
         work_type = st.selectbox(
@@ -340,6 +364,12 @@ with st.form("search_form"):
             help="Filter results by document type. 'All types' searches everything OpenAlex has."
         )
         
+        force_refresh = st.checkbox(
+            "🔄 Force Refresh (Ignore Cache)", 
+            value=False,
+            help="Check this if you're getting 0 results unexpectedly or suspect cached data."
+        )
+        
     with col2:
         email = st.text_input(
             "📧 Your Email (for OpenAlex polite pool)",
@@ -347,18 +377,16 @@ with st.form("search_form"):
             help="OPTIONAL but recommended: Use your real email address for better performance."
         )
         st.caption("Adding your email gives you access to the 'polite pool' for better performance.")
-        # ---- API Key field is REMOVED ----
         st.success("🔒 **API Key: Configured securely** (server-side)")
 
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
-# Cache results
+# ---- THE CACHED FUNCTION ----
 @st.cache_data(show_spinner=False)
-def run_collection(phrases_tuple, years_tuple, email, api_key, work_type):
+def run_collection(phrases_tuple, years_tuple, email, api_key, work_type, refresh_seed):
     return collect(list(phrases_tuple), list(years_tuple), email=email, api_key=api_key, work_type=work_type)
 
 if submitted:
-    # ---- Save email to session state ----
     st.session_state.email = email
     
     phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
@@ -369,10 +397,36 @@ if submitted:
         st.stop()
 
     with st.status("⏳ Searching OpenAlex...", expanded=True) as status:
-        # The api_key is passed from the secret we loaded at the top
-        results_by_year = run_collection(tuple(phrases), tuple(years), email, api_key, work_type)
+        refresh_seed = random.randint(0, 999999) if force_refresh else 0
+        
+        # ---- Unpack results and debug info ----
+        results_by_year, debug_info = run_collection(
+            tuple(phrases), 
+            tuple(years), 
+            email, 
+            api_key, 
+            work_type,
+            refresh_seed
+        )
         total = sum(len(v) for v in results_by_year.values())
         status.update(label=f"✅ Done! Found {total} unique records.", state="complete")
+
+    if force_refresh:
+        st.success("🔄 Cache bypassed! Results are freshly fetched from OpenAlex.")
+
+    # ---- DEBUG: If total is 0, show the exact URL ----
+    if total == 0:
+        st.warning("⚠️ **0 results found.** This might be due to a rate limit, a malformed query, or genuinely 0 works.")
+        st.warning("Here is the exact URL the app called for the first search (copy and paste it into your browser to test):")
+        
+        # Get the first debug entry
+        first_key = list(debug_info.keys())[0]
+        first_debug = debug_info[first_key]
+        st.code(first_debug["url"], language="text")
+        st.caption("If this URL shows results in your browser, the app is having a parsing issue. If it shows 0 or an error, the problem is with your API key/rate limits.")
+        
+        # Optionally, display the raw count from OpenAlex
+        st.caption(f"OpenAlex reported count: **{first_debug['count']}** for '{first_key[0]}' in {first_key[1]}.")
 
     # ---- Save to search history ----
     search_record = {
@@ -384,7 +438,7 @@ if submitted:
     }
     st.session_state.search_history.append(search_record)
 
-    # ---- Build the preview DataFrame ----
+    # ---- Build preview ----
     all_rows = []
     for year, rows in results_by_year.items():
         for r in rows:
@@ -396,60 +450,62 @@ if submitted:
                 "Has PDF": "✅" if r["pdf_url"] else "❌",
                 "Phrases": "; ".join(r.get("matched_phrases", []))
             })
-    df = pd.DataFrame(all_rows)
+    
+    if all_rows:
+        df = pd.DataFrame(all_rows)
 
-    # ---- Show preview with exclude checkboxes ----
-    st.subheader("📄 Preview of Results")
-    st.caption("Check the box next to any row you want to **exclude** from the final download.")
+        st.subheader("📄 Preview of Results")
+        st.caption("Check the box next to any row you want to **exclude** from the final download.")
 
-    df_with_checkboxes = df.copy()
-    df_with_checkboxes.insert(0, "Exclude", False)
+        df_with_checkboxes = df.copy()
+        df_with_checkboxes.insert(0, "Exclude", False)
 
-    edited_df = st.data_editor(
-        df_with_checkboxes,
-        use_container_width=True,
-        height=400,
-        column_config={
-            "Exclude": st.column_config.CheckboxColumn("Exclude", help="Check to exclude this row from export"),
-            "Title": st.column_config.TextColumn("Title", width="large"),
-            "Authors": st.column_config.TextColumn("Authors", width="medium"),
-            "Journal": st.column_config.TextColumn("Journal", width="medium"),
-            "Year": st.column_config.NumberColumn("Year", width="small"),
-            "Has PDF": st.column_config.TextColumn("PDF", width="small"),
-            "Phrases": st.column_config.TextColumn("Matched Phrases", width="medium"),
-        },
-        hide_index=True,
-    )
+        edited_df = st.data_editor(
+            df_with_checkboxes,
+            use_container_width=True,
+            height=400,
+            column_config={
+                "Exclude": st.column_config.CheckboxColumn("Exclude", help="Check to exclude this row from export"),
+                "Title": st.column_config.TextColumn("Title", width="large"),
+                "Authors": st.column_config.TextColumn("Authors", width="medium"),
+                "Journal": st.column_config.TextColumn("Journal", width="medium"),
+                "Year": st.column_config.NumberColumn("Year", width="small"),
+                "Has PDF": st.column_config.TextColumn("PDF", width="small"),
+                "Phrases": st.column_config.TextColumn("Matched Phrases", width="medium"),
+            },
+            hide_index=True,
+        )
 
-    excluded_indices = set()
-    for idx, row in edited_df.iterrows():
-        if row["Exclude"]:
-            excluded_indices.add(idx)
+        excluded_indices = set()
+        for idx, row in edited_df.iterrows():
+            if row["Exclude"]:
+                excluded_indices.add(idx)
 
-    missing_count = sum(1 for r in all_rows if r["Has PDF"] == "❌")
-    st.caption(f"📌 {missing_count} records are missing a PDF link (they'll appear in the 'Missing PDFs' sheet).")
-    if excluded_indices:
-        st.info(f"🚫 {len(excluded_indices)} row(s) marked for exclusion from the download.")
+        missing_count = sum(1 for r in all_rows if r["Has PDF"] == "❌")
+        st.caption(f"📌 {missing_count} records are missing a PDF link (they'll appear in the 'Missing PDFs' sheet).")
+        if excluded_indices:
+            st.info(f"🚫 {len(excluded_indices)} row(s) marked for exclusion from the download.")
 
-    # ---- Export button ----
-    if st.button("⬇️ Download Excel File", use_container_width=True):
-        with st.spinner("Generating Excel..."):
-            output = BytesIO()
-            export_to_excel_bytes(
-                results_by_year, 
-                phrases, 
-                years, 
-                output, 
-                email=email,
-                exclude_indices=excluded_indices
-            )
-            output.seek(0)
-            st.download_button(
-                label="📥 Click here to save the file",
-                data=output,
-                file_name=f"Literature_Search_{start_year}-{end_year}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        if st.button("⬇️ Download Excel File", use_container_width=True):
+            with st.spinner("Generating Excel..."):
+                output = BytesIO()
+                export_to_excel_bytes(
+                    results_by_year, 
+                    phrases, 
+                    years, 
+                    output, 
+                    email=email,
+                    exclude_indices=excluded_indices
+                )
+                output.seek(0)
+                st.download_button(
+                    label="📥 Click here to save the file",
+                    data=output,
+                    file_name=f"Literature_Search_{start_year}-{end_year}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+    else:
+        st.info("No results to preview.")
 
 # ---- Display search history ----
 if st.session_state.search_history:
