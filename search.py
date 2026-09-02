@@ -71,7 +71,7 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – with prepaid=true support
+# 2. SEARCH FUNCTION – no prepaid parameter
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200, 
@@ -99,8 +99,7 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         params["mailto"] = email
     if api_key:
         params["api_key"] = api_key
-        # ---- KEY FIX: Bypass daily free budget, use prepaid credits ----
-        params["prepaid"] = "true"
+    # ✅ prepaid=true removed – OpenAlex handles this automatically
 
     temp_params = dict(params)
     temp_params["cursor"] = "*"
