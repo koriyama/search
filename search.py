@@ -305,27 +305,26 @@ if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
-# ---- Custom CSS: floating card, reduced header spacing, fix cut-off ----
+# ---- Custom CSS: floating card, header fully visible, button spacing ----
 st.markdown("""
 <style>
     /* Main container: floating card */
     .main > div {
         background: white;
         border-radius: 12px;
-        padding: 1.5rem 2rem 2rem 2rem;
+        padding: 1.2rem 2rem 2rem 2rem;
         box-shadow: 0 4px 20px rgba(0,0,0,0.08);
         border: 1px solid #e6e9ef;
         margin-bottom: 2rem;
     }
-    /* Reduce top padding so header isn't cut off */
+    /* Ensure the header is not cut off */
     .block-container {
-        padding-top: 0.5rem;
+        padding-top: 0.2rem;
         padding-bottom: 1rem;
     }
-    /* Ensure h1 has enough top margin */
     h1 {
         margin-top: 0px;
-        margin-bottom: 0.5rem;
+        margin-bottom: 0.3rem;
     }
     /* Tighten button gaps */
     div[data-testid="column"]:nth-child(1) {
@@ -419,8 +418,21 @@ with st.form("search_form"):
         )
         start_year = st.number_input("Start Year", min_value=1900, max_value=2030, value=2020, step=1)
         end_year = st.number_input("End Year", min_value=1900, max_value=2030, value=2026, step=1)
+        force_refresh = st.checkbox(
+            "🔄 Force Refresh (Ignore Cache)", 
+            value=False,
+            help="Check this if you're getting 0 results unexpectedly or suspect cached data."
+        )
         
-        # Work type: now a multi-select
+    with col2:
+        email = st.text_input(
+            "📧 Recommended: Your Email (for OpenAlex polite pool)",
+            value=st.session_state.email,
+            help="⚠️ **REQUIRED for best performance.** Use your real email address (e.g., name@university.edu). Without it, you'll have only 10 requests per day."
+        )
+        st.caption("**Use of a real email gives you 10x more daily searches.**")
+        
+        # Work type: multi-select (now in the right column)
         work_type_options = ["All types", "article", "book", "book-chapter", "dataset", 
                              "dissertation", "preprint", "conference-paper", "conference-abstract",
                              "book-review", "report", "editorial", "letter", "erratum"]
@@ -430,24 +442,9 @@ with st.form("search_form"):
             default=["All types"],
             help="Filter results by one or more document types. 'All types' means no filter."
         )
-        # If "All types" is selected, we ignore other selections
+        # If "All types" is selected, ignore other selections
         if "All types" in work_types:
-            work_types = ["All types"]  # ensure only that one
-        
-        force_refresh = st.checkbox(
-            "🔄 Force Refresh (Ignore Cache)", 
-            value=False,
-            help="Check this if you're getting 0 results unexpectedly or suspect cached data."
-        )
-        
-    with col2:
-        email = st.text_input(
-            "📧 Your Email (for OpenAlex polite pool)",
-            value=st.session_state.email,
-            help="⚠️ **REQUIRED for best performance.** Use your real email address (e.g., name@university.edu). Without it, you'll have only 10 requests per day."
-        )
-        st.caption("**Real email = 10x more daily searches.**")
-        # Removed the green "API Key: Configured securely" box
+            work_types = ["All types"]
 
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
@@ -598,7 +595,7 @@ if st.session_state.results_available:
             column_config={
                 "Exclude": st.column_config.CheckboxColumn(
                     "Exclude", 
-                    width="small",   # narrow column
+                    width="small",
                     help="Check to exclude this row from export"
                 ),
                 "Year": st.column_config.NumberColumn("Year", width="small"),
@@ -608,7 +605,7 @@ if st.session_state.results_available:
                 "Abstract": st.column_config.TextColumn(
                     "Abstract (double click to expand)", 
                     width="large",
-                    disabled=False    # prevents mobile double‑tap bug
+                    disabled=False
                 ),
                 "Has PDF": st.column_config.TextColumn("PDF", width="small"),
                 "Phrases": st.column_config.TextColumn("Matched Phrases", width="medium"),
