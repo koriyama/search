@@ -330,6 +330,10 @@ st.info(
     "No data is stored on any server or shared with anyone."
 )
 
+# ---- EMAIL WARNING (if placeholder) ----
+if st.session_state.email in ["", "your_email@example.com"]:
+    st.warning("⚠️ **Please enter your real email address** in the field below. Without a real email, OpenAlex limits you to the lowest daily quota (only 10 requests). A real email gives you 10x more daily searches.")
+
 # ---- OpenAlex description (minimised by default) ----
 with st.expander("ℹ️ About this search tool", expanded=False):
     st.markdown("""
@@ -398,17 +402,25 @@ with st.form("search_form"):
         email = st.text_input(
             "📧 Your Email (for OpenAlex polite pool)",
             value=st.session_state.email,
-            help="OPTIONAL but recommended: Use your real email address for better performance."
+            help="⚠️ **REQUIRED for best performance.** Use your real email address (e.g., name@university.edu). Without it, you'll have only 10 requests per day."
         )
-        st.caption("Adding your email gives you access to the 'polite pool' for better performance.")
+        st.caption("**Real email = 10x more daily searches.**")
         st.success("🔒 **API Key: Configured securely** (server-side)")
 
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
 # ---- HANDLE FORM SUBMISSION ----
 if submitted:
-    # Save inputs to session state
+    # Save email to session
     st.session_state.email = email
+
+    # ---- VALIDATE EMAIL ----
+    if not email or email == "your_email@example.com" or email.strip() == "":
+        st.error("❌ **Please enter your real email address.**")
+        st.error("Without a real email, OpenAlex limits you to only ~10 requests per day. Enter your real email and try again.")
+        st.stop()
+
+    # Save other inputs
     st.session_state.phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
     st.session_state.years = list(range(int(start_year), int(end_year) + 1))
     st.session_state.work_type = work_type
@@ -497,7 +509,7 @@ if st.session_state.do_full_fetch:
         total = len(flat_rows)
         status.update(label=f"✅ Done! Found {total} unique records.", state="complete")
 
-    # Reset the flag to avoid re‑running on next rerun
+    # Reset the flag
     st.session_state.do_full_fetch = False
 
     # ---- Show preview ----
