@@ -3,10 +3,11 @@ import pandas as pd
 import requests
 import time
 import urllib.parse
-from io import BytesIO, StringIO
+from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 import re
 import random
 from datetime import datetime
@@ -178,7 +179,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT FUNCTIONS – now support both Excel and CSV
+# 4. EXPORT FUNCTION – with user choice and Excel Table formatting
 # ============================================================
 
 def sanitize_for_excel(value):
@@ -186,54 +187,79 @@ def sanitize_for_excel(value):
         return re.sub(r'[\000-\010]|[\013-\014]|[\016-\037]', '', value)
     return value
 
-def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None):
+def write_sheet(ws, rows, header, bold):
+    """Write data to a worksheet and format as an Excel Table."""
+    # Write header
+    for col_idx, h in enumerate(header, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = bold
+    # Write data rows
+    for r_idx, row in enumerate(rows, start=2):
+        ws.cell(row=r_idx, column=1, value=sanitize_for_excel(row["title"]))
+        ws.cell(row=r_idx, column=2, value=sanitize_for_excel(row["authors"]))
+        ws.cell(row=r_idx, column=3, value=sanitize_for_excel(row["journal"]))
+        ws.cell(row=r_idx, column=4, value=sanitize_for_excel(row["abstract"]))
+        doi_cell = ws.cell(row=r_idx, column=5, value=row["doi_url"])
+        if row["doi_url"]:
+            doi_cell.hyperlink = row["doi_url"]
+            doi_cell.font = Font(color="0563C1", underline="single")
+        pdf_cell = ws.cell(row=r_idx, column=6, value=row["pdf_url"])
+        if row["pdf_url"]:
+            pdf_cell.hyperlink = row["pdf_url"]
+            pdf_cell.font = Font(color="0563C1", underline="single")
+        ws.cell(row=r_idx, column=7, value="; ".join(row.get("matched_phrases", [])))
+    # Auto‑adjust column widths
+    for i, w in enumerate([50, 30, 30, 70, 35, 45, 25], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    # Freeze header row
+    ws.freeze_panes = "A2"
+    # Convert to Excel Table if there is data
+    max_row = ws.max_row
+    max_col = ws.max_column
+    if max_row > 1:
+        table = Table(displayName=f"Table_{ws.title.replace(' ', '_')}", ref=f"A1:{get_column_letter(max_col)}{max_row}")
+        style = TableStyleInfo(name="TableStyleMedium9", showFirstColumn=False,
+                               showLastColumn=False, showRowStripes=True, showColumnStripes=False)
+        table.tableStyleInfo = style
+        ws.add_table(table)
+
+def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None, separate_tabs=False):
     wb = Workbook()
-    wb.remove(wb.active)
+    # Remove default sheet
+    if wb.active:
+        wb.remove(wb.active)
 
     header = ["Title", "Authors", "Journal", "Abstract", "DOI", "PDF URL", "Matched Phrase(s)"]
     bold = Font(bold=True)
+
+    # Track missing PDFs across all rows
     missing_pdfs_rows = []
 
-    by_year = {}
-    for year, row in merged_rows:
-        if year not in by_year:
-            by_year[year] = []
-        by_year[year].append(row)
+    if separate_tabs:
+        # Group by year
+        by_year = {}
+        for year, row in merged_rows:
+            by_year.setdefault(year, []).append(row)
+        for year in sorted(by_year.keys()):
+            ws = wb.create_sheet(title=str(year))
+            rows = sorted(by_year[year], key=lambda r: r["title"].lower())
+            write_sheet(ws, rows, header, bold)
+            # Collect missing PDFs
+            for r in rows:
+                if not r.get("pdf_url"):
+                    missing_pdfs_rows.append(r)
+    else:
+        # Single sheet – all records
+        ws = wb.create_sheet(title="All Records")
+        # Sort by year then title
+        rows = sorted([r[1] for r in merged_rows], key=lambda r: (r["year"], r["title"].lower()))
+        write_sheet(ws, rows, header, bold)
+        # Collect missing PDFs
+        for r in rows:
+            if not r.get("pdf_url"):
+                missing_pdfs_rows.append(r)
 
-    for year in all_years:
-        ws = wb.create_sheet(title=str(year))
-        for col_idx, h in enumerate(header, start=1):
-            ws.cell(row=1, column=col_idx, value=h).font = bold
-
-        rows = sorted(by_year.get(year, []), key=lambda r: r["title"].lower())
-        for r_idx, row in enumerate(rows, start=2):
-            ws.cell(row=r_idx, column=1, value=sanitize_for_excel(row["title"]))
-            ws.cell(row=r_idx, column=2, value=sanitize_for_excel(row["authors"]))
-            ws.cell(row=r_idx, column=3, value=sanitize_for_excel(row["journal"]))
-            ws.cell(row=r_idx, column=4, value=sanitize_for_excel(row["abstract"]))
-
-            doi_cell = ws.cell(row=r_idx, column=5)
-            if row["doi_url"]:
-                doi_cell.value = row["doi_url"]
-                doi_cell.hyperlink = row["doi_url"]
-                doi_cell.font = Font(color="0563C1", underline="single")
-
-            pdf_cell = ws.cell(row=r_idx, column=6)
-            if row["pdf_url"]:
-                pdf_cell.value = row["pdf_url"]
-                pdf_cell.hyperlink = row["pdf_url"]
-                pdf_cell.font = Font(color="0563C1", underline="single")
-            else:
-                missing_pdfs_rows.append(row)
-
-            ws.cell(row=r_idx, column=7, value="; ".join(row.get("matched_phrases", [])))
-
-        widths = [50, 30, 30, 70, 35, 45, 25]
-        for i, w in enumerate(widths, start=1):
-            ws.column_dimensions[get_column_letter(i)].width = w
-        ws.freeze_panes = "A2"
-
-    # Settings sheet
+    # ---- Settings sheet ----
     settings_ws = wb.create_sheet(title="Search Settings")
     settings_ws.cell(row=1, column=1, value="Setting").font = bold
     settings_ws.cell(row=1, column=2, value="Value").font = bold
@@ -250,18 +276,22 @@ def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None):
     settings_ws.column_dimensions["A"].width = 30
     settings_ws.column_dimensions["B"].width = 60
 
-    # Missing PDFs
+    # ---- Missing PDFs sheet ----
     missing_ws = wb.create_sheet(title="Missing PDFs")
-    for col_idx, h in enumerate(["Title", "Authors", "Year", "DOI"], start=1):
+    missing_headers = ["Title", "Authors", "Year", "DOI"]
+    for col_idx, h in enumerate(missing_headers, start=1):
         missing_ws.cell(row=1, column=col_idx, value=h).font = bold
-    for r_idx, row in enumerate(sorted(missing_pdfs_rows, key=lambda r: (r["year"] or 0, r["title"].lower())), start=2):
-        missing_ws.cell(row=r_idx, column=1, value=sanitize_for_excel(row["title"]))
-        missing_ws.cell(row=r_idx, column=2, value=sanitize_for_excel(row["authors"]))
-        missing_ws.cell(row=r_idx, column=3, value=row["year"])
-        doi_cell = missing_ws.cell(row=r_idx, column=4, value=row["doi_url"])
-        if row["doi_url"]:
-            doi_cell.hyperlink = row["doi_url"]
-            doi_cell.font = Font(color="0563C1", underline="single")
+    if missing_pdfs_rows:
+        for r_idx, r in enumerate(sorted(missing_pdfs_rows, key=lambda r: (r["year"], r["title"].lower())), start=2):
+            missing_ws.cell(row=r_idx, column=1, value=sanitize_for_excel(r["title"]))
+            missing_ws.cell(row=r_idx, column=2, value=sanitize_for_excel(r["authors"]))
+            missing_ws.cell(row=r_idx, column=3, value=r["year"])
+            doi_cell = missing_ws.cell(row=r_idx, column=4, value=r["doi_url"])
+            if r["doi_url"]:
+                doi_cell.hyperlink = r["doi_url"]
+                doi_cell.font = Font(color="0563C1", underline="single")
+    else:
+        missing_ws.cell(row=2, column=1, value="No missing PDFs in the download list.")
     for i, w in enumerate([50, 30, 10, 35], start=1):
         missing_ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -269,25 +299,6 @@ def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None):
     wb.save(out)
     out.seek(0)
     return out
-
-def export_to_csv_bytes(merged_rows):
-    # Build a simple CSV with headers
-    data = []
-    for year, row in merged_rows:
-        data.append({
-            "Year": year,
-            "Title": row["title"],
-            "Authors": row["authors"],
-            "Journal": row["journal"],
-            "Abstract": row["abstract"],
-            "DOI": row["doi_url"],
-            "PDF URL": row["pdf_url"],
-            "Matched Phrases": "; ".join(row.get("matched_phrases", []))
-        })
-    df = pd.DataFrame(data)
-    out = StringIO()
-    df.to_csv(out, index=False)
-    return out.getvalue().encode('utf-8')
 
 # ============================================================
 # 5. PRE‑FLIGHT COUNT
@@ -359,8 +370,8 @@ if "do_full_fetch" not in st.session_state:
     st.session_state.do_full_fetch = False
 if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
-if "merged_rows" not in st.session_state:
-    st.session_state.merged_rows = []  # list of (year, row) – the download list
+if "download_rows" not in st.session_state:
+    st.session_state.download_rows = []  # list of (year, row) – the download list
 
 # ---- FORM ----
 with st.form("search_form"):
@@ -375,7 +386,6 @@ with st.form("search_form"):
         end_year = st.number_input("End Year", min_value=1900, max_value=2030, value=2026, step=1)
         force_refresh = st.checkbox("🔄 Force Refresh (Ignore Cache)", value=False)
     with col2:
-        # Email field – now optional, with a gentle reminder
         email = st.text_input(
             "📧 Recommended: Your Email (for OpenAlex polite pool)",
             value=st.session_state.email,
@@ -471,7 +481,7 @@ if st.session_state.do_full_fetch:
         "flat_rows": flat_rows,
         "total": total,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "included_indices": set()  # empty by default
+        "included_indices": set()
     }
     st.session_state.search_sessions.insert(0, new_search)
     st.session_state.do_full_fetch = False
@@ -482,7 +492,7 @@ if st.session_state.search_sessions:
     st.subheader("📋 All Searches (newest first)")
     st.caption("For each search, tick the rows you want to include. Then click the **Apply** button at the bottom to build the download list.")
 
-    # We'll store the edited dataframes in session state per search ID
+    # Store the edited dataframes in session state per search ID
     for idx, sess in enumerate(st.session_state.search_sessions):
         flat_rows = sess["flat_rows"]
         total = sess["total"]
@@ -490,7 +500,6 @@ if st.session_state.search_sessions:
             continue
         included_indices = sess.get("included_indices", set())
 
-        # Build the dataframe with Include checkbox
         all_rows = []
         for i, (year, r) in enumerate(flat_rows):
             all_rows.append({
@@ -505,14 +514,11 @@ if st.session_state.search_sessions:
             })
         df = pd.DataFrame(all_rows)
 
-        # Use a key per search
         editor_key = f"include_editor_{sess['id']}"
         if f"df_{sess['id']}" not in st.session_state:
             st.session_state[f"df_{sess['id']}"] = df
 
-        # Expand first two searches by default (or all if you prefer)
         with st.expander(f"Search {idx+1}: {sess['phrases'][0][:60]}… ({total} records, {len(included_indices)} included)", expanded=(idx < 2)):
-            # Show include buttons per search
             colA, colB = st.columns([1, 1])
             if colA.button(f"✅ Include All", key=f"include_all_{sess['id']}"):
                 df_local = st.session_state[f"df_{sess['id']}"].copy()
@@ -525,7 +531,6 @@ if st.session_state.search_sessions:
                 st.session_state[f"df_{sess['id']}"] = df_local
                 st.rerun()
 
-            # Data editor with Include checkbox
             edited_df = st.data_editor(
                 st.session_state[f"df_{sess['id']}"],
                 use_container_width=True,
@@ -551,18 +556,15 @@ if st.session_state.search_sessions:
                 hide_index=True,
                 key=editor_key
             )
-            # Update search's included_indices from edited_df
             new_included = set()
             for row_idx, row in edited_df.iterrows():
                 if row["Include"]:
                     new_included.add(row_idx)
             sess["included_indices"] = new_included
-            # Save the edited df back to session state
             st.session_state[f"df_{sess['id']}"] = edited_df
-
             st.caption(f"📌 {len(new_included)} rows included from this search.")
 
-    # ---- Apply button (no horizontal ruler) ----
+    # ---- Apply button ----
     if st.button("🔄 Apply Selected Records", use_container_width=True):
         all_included = []
         for sess in st.session_state.search_sessions:
@@ -570,27 +572,25 @@ if st.session_state.search_sessions:
             for row_idx in included:
                 if row_idx < len(sess["flat_rows"]):
                     all_included.append(sess["flat_rows"][row_idx])
-        # Deduplicate
         seen = set()
-        merged = []
+        download_rows = []
         for year, r in all_included:
             key = r.get("id") or r.get("doi_url") or f"{r['title'].strip().lower()}|{r['year']}"
             if key not in seen:
                 seen.add(key)
-                merged.append((year, r))
-        st.session_state.merged_rows = merged
-        st.success(f"✅ Download list updated: {len(merged)} unique records.")
+                download_rows.append((year, r))
+        st.session_state.download_rows = download_rows
+        st.success(f"✅ Download list updated: {len(download_rows)} unique records.")
         st.rerun()
 
     # ---- Display Download List ----
-    if st.session_state.merged_rows:
-        merged_rows = st.session_state.merged_rows
-        st.subheader(f"📦 Download List – {len(merged_rows)} unique included records")
+    if st.session_state.download_rows:
+        download_rows = st.session_state.download_rows
+        st.subheader(f"📦 Download List – {len(download_rows)} unique included records")
         st.caption("This is the union of all rows you marked 'Include' across all searches. Download this set below.")
 
-        # Quick preview with row numbers starting from 1
         preview_data = []
-        for i, (year, r) in enumerate(merged_rows, start=1):
+        for i, (year, r) in enumerate(download_rows, start=1):
             preview_data.append({
                 "No.": i,
                 "Year": year,
@@ -599,10 +599,9 @@ if st.session_state.search_sessions:
         preview_df = pd.DataFrame(preview_data)
         st.dataframe(preview_df, use_container_width=True, height=200)
 
-        # ---- Single‑click download with format selector ----
-        col_name, col_format, col_btn = st.columns([3, 1, 1])
+        # ---- Download section with format choices ----
+        col_name, col_mode, col_btn = st.columns([2, 1, 1])
         with col_name:
-            # Build filename from first search's phrases
             if st.session_state.search_sessions:
                 first_phrases = st.session_state.search_sessions[0]["phrases"]
                 summary = "_".join(first_phrases)[:50].replace(" ", "_").replace('"', '').replace("'", "")
@@ -616,18 +615,17 @@ if st.session_state.search_sessions:
                 help="Customise the base file name before downloading.",
                 key="download_filename"
             )
-        with col_format:
-            format_choice = st.radio(
-                "Format",
-                options=["Excel (.xlsx)", "CSV (.csv)"],
+        with col_mode:
+            export_mode = st.radio(
+                "Export as:",
+                options=["Single sheet", "Separate tabs by year"],
                 index=0,
-                key="download_format"
+                key="export_mode"
             )
         with col_btn:
             st.write("")  # vertical spacer
             st.write("")
             if st.button("⬇️ Download File", use_container_width=True, key="download_btn"):
-                # Prepare data
                 all_phrases = []
                 all_years = []
                 for sess in st.session_state.search_sessions:
@@ -635,21 +633,19 @@ if st.session_state.search_sessions:
                     all_years.extend(sess["years"])
                 all_phrases = list(dict.fromkeys(all_phrases))
                 all_years = sorted(set(all_years))
-
-                if format_choice == "Excel (.xlsx)":
-                    file_ext = ".xlsx"
-                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    data = export_to_excel_bytes(merged_rows, all_phrases, all_years, st.session_state.email)
-                else:
-                    file_ext = ".csv"
-                    mime = "text/csv"
-                    data = export_to_csv_bytes(merged_rows)
-
+                
+                output = export_to_excel_bytes(
+                    download_rows,
+                    all_phrases,
+                    all_years,
+                    st.session_state.email,
+                    separate_tabs=(export_mode == "Separate tabs by year")
+                )
                 st.download_button(
                     label="📥 Click to save",
-                    data=data,
-                    file_name=f"{filename.strip() if filename.strip() else default_filename}{file_ext}",
-                    mime=mime,
+                    data=output,
+                    file_name=f"{filename.strip() if filename.strip() else default_filename}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                     key="final_download"
                 )
