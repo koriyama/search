@@ -397,7 +397,7 @@ if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
-st.title("📚 Literature Search")
+st.title("Search")
 st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals and PDF links are all included.")
 
 with st.expander("ℹ️ About this search tool", expanded=False):
