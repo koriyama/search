@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import time
+import urllib.parse
 from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -9,7 +10,7 @@ from openpyxl.utils import get_column_letter
 import re
 
 # ============================================================
-# 1. YOUR ORIGINAL FUNCTIONS (unchanged except export adapted)
+# 1. YOUR ORIGINAL FUNCTIONS (unchanged)
 # ============================================================
 
 def reconstruct_abstract(inverted_index):
@@ -68,36 +69,65 @@ def normalize_work(work):
 
 OPENALEX_URL = "https://api.openalex.org/works"
 
+# ============================================================
+# 2. FIXED SEARCH FUNCTION – handles non‑ASCII perfectly
+# ============================================================
+
 def search_openalex_phrase_year(phrase, year, email=None, per_page=200, session=None, sleep_between=0.1):
+    """
+    Query OpenAlex for a single exact phrase, restricted to one year.
+    Uses manual URL encoding to ensure non‑ASCII characters (like 守破離) work.
+    """
     session = session or requests.Session()
     results = []
     cursor = "*"
-    params_base = {
-        "filter": f'title_and_abstract.search:"{phrase}",publication_year:{year}',
-        "per-page": per_page,
-    }
+
+    # URL‑encode the phrase (e.g., "守破離" → "%E5%AE%88%E7%A0%B4%E9%9B%A2")
+    # This is safe for OpenAlex's `filter` syntax.
+    encoded_phrase = urllib.parse.quote(phrase, safe='')
+
+    # Build the base query string manually.
+    # We keep the double quotes around the phrase for exact‑phrase matching.
+    base_query = (
+        f"filter=title_and_abstract.search%3A%22{encoded_phrase}%22%2Cpublication_year%3A{year}"
+        f"&per-page={per_page}"
+    )
     if email:
-        params_base["mailto"] = email
+        base_query += f"&mailto={urllib.parse.quote(email)}"
 
     while cursor:
-        params = dict(params_base)
-        params["cursor"] = cursor
-        resp = session.get(OPENALEX_URL, params=params, timeout=30)
-        resp.raise_for_status()
+        # Build the full URL for this page
+        url = f"{OPENALEX_URL}?{base_query}&cursor={cursor}"
+        
+        try:
+            resp = session.get(url, timeout=30)
+            resp.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            # Show the actual error from OpenAlex in the Streamlit UI
+            st.error(f"❌ OpenAlex API error for phrase '{phrase}' (year {year}):")
+            st.error(f"Status code: {resp.status_code}")
+            st.error(f"Response body (first 500 chars):\n{resp.text[:500]}")
+            raise  # Re‑raise so the app still stops
+
         data = resp.json()
         for work in data.get("results", []):
             results.append(normalize_work(work))
+        
         cursor = (data.get("meta", {}) or {}).get("next_cursor")
         if not data.get("results"):
             break
         time.sleep(sleep_between)
+
     return results
+
+# ============================================================
+# 3. COLLECT FUNCTION (unchanged)
+# ============================================================
 
 def collect(phrases, years, email=None, sleep_between=0.1, fetch_fn=search_openalex_phrase_year):
     by_year = {y: {} for y in years}
     for year in years:
         for phrase in phrases:
-            # We'll use st.progress if called from Streamlit, but this function can also run standalone
             rows = fetch_fn(phrase, year, email=email, sleep_between=sleep_between)
             for row in rows:
                 key = row["id"] or row["doi_url"] or f"{row['title'].strip().lower()}|{row['year']}"
@@ -112,7 +142,7 @@ def collect(phrases, years, email=None, sleep_between=0.1, fetch_fn=search_opena
     return {year: list(rows.values()) for year, rows in by_year.items()}
 
 # ============================================================
-# 2. EXPORT ADAPTED TO BYTESIO (instead of writing to disk)
+# 4. EXPORT ADAPTED TO BYTESIO
 # ============================================================
 
 ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
@@ -196,7 +226,7 @@ def export_to_excel_bytes(results_by_year, phrases, years, out_bytes, email=None
     wb.save(out_bytes)
 
 # ============================================================
-# 3. STREAMLIT USER INTERFACE
+# 5. STREAMLIT USER INTERFACE
 # ============================================================
 
 st.set_page_config(page_title="OpenAlex Literature Collector", layout="wide")
@@ -211,7 +241,7 @@ with st.form("search_form"):
         phrases_input = st.text_area(
             "🔍 Search Phrases (one per line)",
             value="epistemic cognition\npersonal epistemology\nepistemological beliefs",  # example – users can replace
-            help="Each phrase is searched as an exact match in title and abstract."
+            help="Each phrase is searched as an exact match in title and abstract. Non‑ASCII (e.g., 守破離) works now."
         )
         start_year = st.number_input("Start Year", min_value=1900, max_value=2030, value=2000, step=1)
         end_year = st.number_input("End Year", min_value=1900, max_value=2030, value=2026, step=1)
