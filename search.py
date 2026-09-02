@@ -599,7 +599,7 @@ if st.session_state.results_available:
                 "Abstract": st.column_config.TextColumn(
                     "Abstract (double click to expand)", 
                     width="large",
-                    disabled=True
+                    disabled=False
                 ),
                 "Has PDF": st.column_config.TextColumn("PDF", width="small"),
                 "Phrases": st.column_config.TextColumn("Matched Phrases", width="medium"),
