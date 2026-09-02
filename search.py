@@ -320,6 +320,8 @@ if "preflight_count" not in st.session_state:
     st.session_state.preflight_count = 0
 if "force_fetch" not in st.session_state:
     st.session_state.force_fetch = False
+if "do_full_fetch" not in st.session_state:
+    st.session_state.do_full_fetch = False
 
 # ---- DISCLAIMER ----
 st.info(
@@ -367,7 +369,7 @@ with st.form("search_form"):
             value=(
                 'climate AND ("man-made change" OR change)\n'
                 '"epistemic cognition" OR "personal epistemology" OR "epistemological beliefs"\n'
-                '"climate change" NOT denial\n'
+                '"climate change" NOT denial'
             ),
             help=(
                 "Each line is a separate query. Use uppercase AND, OR, NOT. "
@@ -406,8 +408,16 @@ with st.form("search_form"):
 # ---- HANDLE PRE‑FLIGHT AND FULL SEARCH ----
 THRESHOLD = 2000
 
+# If the form was submitted, we need to run the pre‑flight and possibly full fetch.
+# We'll use session state to remember that we are in the middle of a search.
 if submitted:
+    # Reset the fetch flag when a new search starts
+    st.session_state.do_full_fetch = False
+    st.session_state.force_fetch = False
+    
+    # Save email to session
     st.session_state.email = email
+    
     phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
     years = list(range(int(start_year), int(end_year) + 1))
 
@@ -424,8 +434,16 @@ if submitted:
             st.error(f"Pre‑flight count failed: {e}")
             st.stop()
 
+    # Store pre‑flight info in session for the next run (if we need to force fetch)
+    st.session_state.preflight_count = total_count
+    st.session_state.phrases = phrases
+    st.session_state.years = years
+    st.session_state.work_type = work_type
+    st.session_state.email = email
+    st.session_state.force_refresh = force_refresh
+
     # ---- Step 2: Check threshold ----
-    if total_count > THRESHOLD and not st.session_state.force_fetch:
+    if total_count > THRESHOLD:
         st.warning(f"⚠️ **Search too broad!** This search would return approximately **{total_count}** works, which is above the safety threshold of **{THRESHOLD}**. This may consume a large number of API requests and take a long time.")
         st.warning("Please narrow your search by:")
         st.warning("- Reducing the year range")
@@ -438,38 +456,23 @@ if submitted:
         if force_check:
             st.session_state.force_fetch = True
             if st.button("📥 Fetch all records", use_container_width=True):
-                # Proceed to full fetch
-                with st.status("⏳ Fetching full records...", expanded=True) as status2:
-                    results_by_year, debug_info = run_collection(
-                        tuple(phrases), tuple(years), email, api_key, work_type, refresh_seed=0
-                    )
-                    # Deduplicate and show preview as before
-                    # We'll reuse the existing code after the full fetch
-                    # But to avoid duplication, we can set a flag and continue
-                    st.session_state.do_full_fetch = True
-                    st.experimental_rerun()
+                st.session_state.do_full_fetch = True
+                st.rerun()
         else:
-            st.session_state.force_fetch = False
             st.stop()
     else:
         # Proceed directly to full fetch
-        st.session_state.force_fetch = False
         st.session_state.do_full_fetch = True
-        st.experimental_rerun()
+        st.rerun()
 
-# ---- THE FULL FETCH (after pre‑flight approval) ----
-if "do_full_fetch" in st.session_state and st.session_state.do_full_fetch:
-    # We need to re‑run the full fetch here.
-    # Since we can't easily pass data between reruns, we'll re‑run the whole logic.
-    # But we can simply proceed with the search here.
-    # Actually, the easiest is to put the full fetch code inside an if block that runs when do_full_fetch is True.
-    # We'll just run it now.
-    # To avoid infinite loops, we'll reset the flag.
-    st.session_state.do_full_fetch = False
-
-    # Re‑read the form inputs (they are still in session state)
-    phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
-    years = list(range(int(start_year), int(end_year) + 1))
+# ---- AFTER PRE‑FLIGHT: IF FULL FETCH IS REQUESTED ----
+if st.session_state.do_full_fetch:
+    # Retrieve stored search parameters
+    phrases = st.session_state.phrases
+    years = st.session_state.years
+    work_type = st.session_state.work_type
+    email = st.session_state.email
+    force_refresh = st.session_state.force_refresh
 
     with st.status("⏳ Fetching full records...", expanded=True) as status:
         refresh_seed = random.randint(0, 999999) if force_refresh else 0
@@ -487,6 +490,9 @@ if "do_full_fetch" in st.session_state and st.session_state.do_full_fetch:
                     flat_rows.append((year, r))
         total = len(flat_rows)
         status.update(label=f"✅ Done! Found {total} unique records.", state="complete")
+
+    # Reset the fetch flag so it doesn't repeat
+    st.session_state.do_full_fetch = False
 
     # ---- Show preview and export (same as before) ----
     if total > 0:
@@ -569,7 +575,7 @@ if "do_full_fetch" in st.session_state and st.session_state.do_full_fetch:
     # Save to history
     search_record = {
         "phrases": ", ".join(phrases),
-        "years": f"{start_year}-{end_year}",
+        "years": f"{years[0]}-{years[-1]}",  # use actual years list
         "timestamp": time.strftime("%Y-%m-%d %H:%M"),
         "total_results": total,
         "work_type": work_type
