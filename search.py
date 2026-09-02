@@ -533,9 +533,9 @@ if st.session_state.results_available:
             all_rows.append({
                 "Year": year,
                 "Title": r["title"],
-                "Abstract": r["abstract"],          # <-- NEW: include abstract
                 "Authors": r["authors"],
                 "Journal": r["journal"],
+                "Abstract": r["abstract"],          # Abstract placed after Journal
                 "Has PDF": "✅" if r["pdf_url"] else "❌",
                 "Phrases": "; ".join(r.get("matched_phrases", []))
             })
@@ -553,7 +553,7 @@ if st.session_state.results_available:
         colA, colB, colC = st.columns([1, 1, 3])
         if colA.button("✖️ Exclude All"):
             st.session_state.df_editor["Exclude"] = True
-            st.rerun()  # update the table immediately
+            st.rerun()
         if colB.button("✅ Include All"):
             st.session_state.df_editor["Exclude"] = False
             st.rerun()
@@ -564,15 +564,20 @@ if st.session_state.results_available:
             height=400,
             column_config={
                 "Exclude": st.column_config.CheckboxColumn("Exclude", help="Check to exclude this row from export"),
+                "Year": st.column_config.NumberColumn("Year", width="small"),
                 "Title": st.column_config.TextColumn("Title", width="large"),
-                "Abstract": st.column_config.TextColumn("Abstract", width="extra large"),  # <-- NEW
                 "Authors": st.column_config.TextColumn("Authors", width="medium"),
                 "Journal": st.column_config.TextColumn("Journal", width="medium"),
-                "Year": st.column_config.NumberColumn("Year", width="small"),
+                "Abstract": st.column_config.TextColumn(
+                    "Abstract", 
+                    width="extra large",
+                    disabled=True   # prevents accidental editing / fill‑down
+                ),
                 "Has PDF": st.column_config.TextColumn("PDF", width="small"),
                 "Phrases": st.column_config.TextColumn("Matched Phrases", width="medium"),
             },
             hide_index=True,
+            # Optional: reorder columns by specifying the order in the dataframe
         )
 
         # Update session state with manual edits
@@ -610,7 +615,6 @@ if st.session_state.results_available:
         st.info("No results to preview.")
 
     # Save to search history (only once per search)
-    # We'll check if this search is already recorded to avoid duplicates
     search_record = {
         "phrases": ", ".join(phrases),
         "years": f"{years[0]}-{years[-1]}",
@@ -618,7 +622,6 @@ if st.session_state.results_available:
         "total_results": total,
         "work_type": st.session_state.work_type
     }
-    # Avoid duplicate entries if user refreshes the page
     if not st.session_state.search_history or st.session_state.search_history[-1] != search_record:
         st.session_state.search_history.append(search_record)
 
