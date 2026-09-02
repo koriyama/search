@@ -286,7 +286,25 @@ def get_total_count(phrases, years, email, api_key, work_types, fetch_fn):
     return total
 
 # ============================================================
-# 6. STREAMLIT UI
+# 6. MERGE HELPER
+# ============================================================
+
+def merge_flat_rows(existing, new_rows):
+    """Merge new rows into existing, deduplicating by id/doi/title+year."""
+    seen = set()
+    for year, row in existing:
+        key = row.get("id") or row.get("doi_url") or f"{row['title'].strip().lower()}|{row['year']}"
+        seen.add(key)
+    merged = existing.copy()
+    for year, row in new_rows:
+        key = row.get("id") or row.get("doi_url") or f"{row['title'].strip().lower()}|{row['year']}"
+        if key not in seen:
+            seen.add(key)
+            merged.append((year, row))
+    return merged
+
+# ============================================================
+# 7. STREAMLIT UI
 # ============================================================
 
 st.set_page_config(page_title="Literature Search", layout="wide")
@@ -298,10 +316,9 @@ if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
-# ---- Custom CSS: only floating card and button spacing (no header tweaks) ----
+# ---- Custom CSS: only floating card and button spacing ----
 st.markdown("""
 <style>
-    /* Main container: floating card */
     .main > div {
         background: white;
         border-radius: 12px;
@@ -310,7 +327,6 @@ st.markdown("""
         border: 1px solid #e6e9ef;
         margin-bottom: 2rem;
     }
-    /* Tighten button gaps */
     div[data-testid="column"]:nth-child(1) {
         padding-right: 2px;
     }
@@ -320,13 +336,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---- Title ----
 st.title("📚 Literature Search")
 
-# ---- Brief app summary ----
+# ---- Intro blurb: no Oxford comma, UK spelling ----
 st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals and PDF links are all included.")
 
-# ---- OpenAlex description ----
 with st.expander("ℹ️ About this search tool", expanded=False):
     st.markdown("""
     This tool searches **OpenAlex** – a free, open index of the world's research ecosystem.
@@ -356,6 +370,8 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     🛡️ **Pre‑flight check:** The app first counts how many works match your search. If the count exceeds 2000, it warns you to narrow your search to avoid excessive API calls. You can still force a full fetch if needed.
     
     ℹ️ **Session‑only storage**: Your email and search history are stored **only in your current browser session**. If you close this tab or refresh the page, they will be cleared. No data is stored on any server or shared with anyone.
+    
+    🔄 **Merging results**: Each new search **appends** its results to the ones already displayed, so you can combine multiple searches in one session. To start fresh, refresh the page.
     """)
 
 # ---- Session state init ----
@@ -384,7 +400,7 @@ if "df_editor" not in st.session_state:
 if "results_available" not in st.session_state:
     st.session_state.results_available = False
 if "flat_rows" not in st.session_state:
-    st.session_state.flat_rows = []
+    st.session_state.flat_rows = []          # holds (year, row) tuples
 if "total_results" not in st.session_state:
     st.session_state.total_results = 0
 
@@ -394,7 +410,7 @@ with st.form("search_form"):
     with col1:
         phrases_input = st.text_area(
             "🔍 Search Phrases",
-            value='"epistemic cognition" AND ( EFL OR ESL )',
+            value='"epistemic cognition" AND EFL',
             help=(
                 "Each line is a separate query. Use uppercase AND, OR, NOT. "
                 "Put double quotes around exact phrases (e.g., \"climate change\")."
@@ -430,12 +446,8 @@ with st.form("search_form"):
 
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
-# ---- Handle submission ----
+# ---- Handle submission (MERGE results) ----
 if submitted:
-    st.session_state.results_available = False
-    st.session_state.flat_rows = []
-    st.session_state.total_results = 0
-
     st.session_state.email = email
 
     if not email or email.strip() == "":
@@ -443,26 +455,30 @@ if submitted:
         st.error("Without an email, OpenAlex limits you to only ~10 requests per day. Enter your email and try again.")
         st.stop()
 
-    st.session_state.phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
-    st.session_state.years = list(range(int(start_year), int(end_year) + 1))
-    st.session_state.work_types = work_types
-    st.session_state.force_refresh = force_refresh
-    st.session_state.do_full_fetch = False
-    st.session_state.force_fetch = False
+    phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
+    years = list(range(int(start_year), int(end_year) + 1))
+    work_types = work_types
+    force_refresh = force_refresh
 
-    if not st.session_state.phrases:
+    if not phrases:
         st.error("Please enter at least one search phrase.")
         st.stop()
+
+    # Store current search parameters for later history
+    st.session_state.phrases = phrases
+    st.session_state.years = years
+    st.session_state.work_types = work_types
+    st.session_state.force_refresh = force_refresh
 
     # Pre‑flight count
     with st.status("🔎 Checking search scope...", expanded=True) as status:
         try:
             total_count = get_total_count(
-                st.session_state.phrases,
-                st.session_state.years,
+                phrases,
+                years,
                 email,
                 api_key,
-                st.session_state.work_types,
+                work_types,
                 search_openalex_phrase_year
             )
             st.session_state.preflight_count = total_count
@@ -492,7 +508,7 @@ if submitted:
         st.session_state.do_full_fetch = True
         st.rerun()
 
-# ---- Full fetch ----
+# ---- Full fetch and merge ----
 if st.session_state.do_full_fetch:
     phrases = st.session_state.phrases
     years = st.session_state.years
@@ -514,19 +530,32 @@ if st.session_state.do_full_fetch:
             tuple(work_types),
             refresh_seed
         )
+        # Build new flat_rows from this fetch
         seen_keys = set()
-        flat_rows = []
+        new_flat_rows = []
         for year, rows in results_by_year.items():
             for r in rows:
                 key = r.get("id") or r.get("doi_url") or f"{r['title'].strip().lower()}|{r['year']}"
                 if key not in seen_keys:
                     seen_keys.add(key)
-                    flat_rows.append((year, r))
-        total = len(flat_rows)
-        status.update(label=f"✅ Done! Found {total} unique records.", state="complete")
+                    new_flat_rows.append((year, r))
+        new_total = len(new_flat_rows)
+        status.update(label=f"✅ Done! Fetched {new_total} new records.", state="running")
 
-    st.session_state.flat_rows = flat_rows
-    st.session_state.total_results = total
+    # Merge with existing flat_rows
+    if st.session_state.flat_rows:
+        merged = merge_flat_rows(st.session_state.flat_rows, new_flat_rows)
+        added = len(merged) - len(st.session_state.flat_rows)
+        st.session_state.flat_rows = merged
+        st.session_state.total_results = len(merged)
+        status.update(label=f"✅ Merged! Added {added} new records. Total now: {len(merged)}.", state="complete")
+    else:
+        st.session_state.flat_rows = new_flat_rows
+        st.session_state.total_results = new_total
+        status.update(label=f"✅ Done! Total: {new_total} records.", state="complete")
+
+    # Reset editor so it rebuilds from merged flat_rows
+    st.session_state.df_editor = None
     st.session_state.results_available = True
     st.session_state.do_full_fetch = False
     st.rerun()
@@ -614,7 +643,7 @@ if st.session_state.results_available:
             filename = st.text_input(
                 "📁 Filename for download",
                 value=default_filename,
-                help="Customise the file name before downloading."
+                help="Customise the file name before downloading."   # UK spelling
             )
         with col_btn:
             st.write("")
@@ -641,7 +670,7 @@ if st.session_state.results_available:
     else:
         st.info("No results to preview.")
 
-    # Save history
+    # Save search history (each distinct search)
     search_record = {
         "phrases": ", ".join(phrases),
         "years": f"{years[0]}-{years[-1]}",
