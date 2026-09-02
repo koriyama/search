@@ -329,10 +329,9 @@ with st.form("search_form"):
         phrases_input = st.text_area(
             "🔍 Search Phrases",
             value=(
-                'climate AND change\n'
+                'climate AND ("man-made change" OR change)\n'
                 '"epistemic cognition" OR "personal epistemology" OR "epistemological beliefs"\n'
                 '"climate change" NOT denial\n'
-                '"machine learning" AND (neural OR deep)'
             ),
             help=(
                 "Each line is a separate query. Use uppercase AND, OR, NOT. "
