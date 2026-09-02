@@ -99,8 +99,6 @@ def normalize_eric(record):
 def translate_for_openalex(query):
     """Map common field names to OpenAlex search fields."""
     # OpenAlex supports: title, author, primary_location.source.display_name, abstract
-    # We keep title, author, abstract as is, and map journal -> primary_location.source.display_name
-    # Use regex to replace 'journal:' at word boundary, case insensitive
     pattern = re.compile(r'\bjournal\s*:', re.IGNORECASE)
     return pattern.sub("primary_location.source.display_name:", query)
 
@@ -455,19 +453,22 @@ def export_to_csv_bytes(merged_rows):
     return out.getvalue().encode('utf-8')
 
 # ============================================================
-# 8. PRE‑FLIGHT COUNT (supports multiple sources)
+# 8. PRE‑FLIGHT COUNT (always both sources)
 # ============================================================
 
-def get_total_count(queries, years, sources, email, api_key, work_types):
+def get_total_count(queries, years, email, api_key, work_types):
     total = 0
-    for source in sources:
-        fetch_fn = search_openalex_query_year if source == "OpenAlex" else search_eric_query_year
-        for year in years:
-            for query in queries:
-                count, _ = fetch_fn(query, year, email=email, api_key=api_key,
-                                    work_types=work_types if source == "OpenAlex" else None,
-                                    just_count=True)
-                total += count
+    # OpenAlex
+    for year in years:
+        for query in queries:
+            count, _ = search_openalex_query_year(query, year, email=email, api_key=api_key,
+                                                  work_types=work_types, just_count=True)
+            total += count
+    # ERIC
+    for year in years:
+        for query in queries:
+            count, _ = search_eric_query_year(query, year, just_count=True)
+            total += count
     return total
 
 # ============================================================
@@ -508,18 +509,17 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-st.markdown("Search scholarly works using **OpenAlex** and/or **ERIC**. Enter your queries with field‑specific syntax (e.g., `title:\"blended learning\" AND author:\"Smith\"`).")
+st.markdown("Search scholarly works from **OpenAlex** and **ERIC** simultaneously. Enter your queries with field‑specific syntax (e.g., `title:\"blended learning\" AND author:\"Smith\"`).")
 
 with st.expander("ℹ️ About this search tool", expanded=False):
     st.markdown("""
-    This tool searches **OpenAlex** (broad scholarly index) and **ERIC** (US education database).
+    This tool searches **OpenAlex** (broad scholarly index) and **ERIC** (US education database) and merges results automatically.
 
     **Search syntax:**
     - Use `title:`, `author:`, `journal:`, `abstract:` to limit fields.
     - Combine with `AND`, `OR`, `NOT` and parentheses.
     - Use double quotes for exact phrases.
     - Example: `title:"blended learning" AND author:"Smith" AND year:2022`
-    - For ERIC, `journal:` maps to `so:`, `title:` to `ti:`, etc.
 
     **Features:**
     - Multiple search sessions, each with its own set of queries.
@@ -562,12 +562,6 @@ with st.form("search_form"):
             help="Optional, but using a real email gives you 10x more daily searches."
         )
         st.caption("**Providing an email is optional** – without it, you'll have a lower daily quota.")
-        source_choice = st.radio(
-            "🔎 Search Source(s)",
-            options=["OpenAlex only", "ERIC only", "Both (merge)"],
-            index=0,
-            help="Choose which database(s) to search. 'Both' will merge and deduplicate results."
-        )
         work_type_options = ["All types", "article", "book", "book-chapter", "dataset",
                              "dissertation", "preprint", "conference-paper", "conference-abstract",
                              "book-review", "report", "editorial", "letter", "erratum"]
@@ -592,21 +586,12 @@ if submitted:
     st.session_state.years = years
     st.session_state.work_types = work_types
     st.session_state.force_refresh = force_refresh
-    st.session_state.source_choice = source_choice
-
-    # Determine sources to use
-    if source_choice == "OpenAlex only":
-        sources = ["OpenAlex"]
-    elif source_choice == "ERIC only":
-        sources = ["ERIC"]
-    else:
-        sources = ["OpenAlex", "ERIC"]
 
     with st.status("🔎 Checking search scope...", expanded=True) as status:
         try:
-            total_count = get_total_count(queries, years, sources, email, api_key, work_types)
+            total_count = get_total_count(queries, years, email, api_key, work_types)
             st.session_state.preflight_count = total_count
-            status.update(label=f"🔎 Found approximately {total_count} matching works.", state="running")
+            status.update(label=f"🔎 Found approximately {total_count} matching works (OpenAlex + ERIC).", state="running")
         except Exception as e:
             st.error(f"Pre‑flight count failed: {e}")
             st.stop()
@@ -631,220 +616,25 @@ if st.session_state.do_full_fetch:
     work_types = st.session_state.work_types
     email = st.session_state.email
     force_refresh = st.session_state.force_refresh
-    source_choice = st.session_state.source_choice
-
-    sources = []
-    if source_choice in ("OpenAlex only", "Both (merge)"):
-        sources.append("OpenAlex")
-    if source_choice in ("ERIC only", "Both (merge)"):
-        sources.append("ERIC")
 
     @st.cache_data(show_spinner=False)
-    def run_collection_cached(queries_tuple, years_tuple, sources_tuple, email, api_key, work_types_tuple, refresh_seed):
-        all_by_year = []
-        for src in sources_tuple:
-            fetch_fn = search_openalex_query_year if src == "OpenAlex" else search_eric_query_year
-            by_year, _ = collect(
-                list(queries_tuple), list(years_tuple), fetch_fn, src,
-                email=email, api_key=api_key, work_types=list(work_types_tuple)
-            )
-            all_by_year.append(by_year)
-        # Merge
-        merged_by_year = merge_by_year(all_by_year)
-        # Flatten to list of (year, row)
+    def run_collection_cached(queries_tuple, years_tuple, email, api_key, work_types_tuple, refresh_seed):
+        # Always search both OpenAlex and ERIC
+        by_year_openalex, _ = collect(
+            list(queries_tuple), list(years_tuple),
+            search_openalex_query_year, "OpenAlex",
+            email=email, api_key=api_key, work_types=list(work_types_tuple)
+        )
+        by_year_eric, _ = collect(
+            list(queries_tuple), list(years_tuple),
+            search_eric_query_year, "ERIC",
+            email=email, api_key=api_key, work_types=None
+        )
+        merged = merge_by_year([by_year_openalex, by_year_eric])
         flat = []
-        for year, rows in merged_by_year.items():
+        for year, rows in merged.items():
             for row in rows:
                 flat.append((year, row))
         return flat
 
-    with st.status("⏳ Fetching full records...", expanded=True) as status:
-        refresh_seed = random.randint(0, 999999) if force_refresh else 0
-        flat_rows = run_collection_cached(
-            tuple(queries), tuple(years), tuple(sources), email, api_key, tuple(work_types), refresh_seed
-        )
-        total = len(flat_rows)
-        status.update(label=f"✅ Fetched {total} unique records.", state="complete")
-
-    new_search = {
-        "id": datetime.now().strftime("%Y%m%d_%H%M%S"),
-        "queries": queries,
-        "years": years,
-        "work_types": work_types,
-        "sources": sources,
-        "flat_rows": flat_rows,
-        "total": total,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "included_indices": set()
-    }
-    st.session_state.search_sessions.insert(0, new_search)
-    st.session_state.do_full_fetch = False
-    st.rerun()
-
-# ---- Display search sessions ----
-if st.session_state.search_sessions:
-    st.subheader("📋 All Searches (newest first)")
-    st.caption("For each search, tick the rows you want to include. Then click the **Apply** button at the bottom to build the download list.")
-
-    for idx, sess in enumerate(st.session_state.search_sessions):
-        flat_rows = sess["flat_rows"]
-        total = sess["total"]
-        if total == 0:
-            continue
-        included_indices = sess.get("included_indices", set())
-
-        all_rows = []
-        for i, (year, r) in enumerate(flat_rows):
-            sources_display = ", ".join(r.get("sources", [r.get("source", "Unknown")]))
-            all_rows.append({
-                "Include": i in included_indices,
-                "Year": year,
-                "Title": r["title"],
-                "Authors": r["authors"],
-                "Journal": r["journal"],
-                "Abstract": r["abstract"],
-                "Has PDF": "✅" if r["pdf_url"] else "❌",
-                "Phrases": "; ".join(r.get("matched_phrases", [])),
-                "Source(s)": sources_display,
-            })
-        df = pd.DataFrame(all_rows)
-
-        editor_key = f"include_editor_{sess['id']}"
-        if f"df_{sess['id']}" not in st.session_state:
-            st.session_state[f"df_{sess['id']}"] = df
-
-        with st.expander(f"Search {idx+1}: {sess['queries'][0][:60]}… ({total} records, {len(included_indices)} included)", expanded=(idx < 2)):
-            colA, colB = st.columns([1, 1])
-            if colA.button(f"✅ Include All", key=f"include_all_{sess['id']}"):
-                df_local = st.session_state[f"df_{sess['id']}"].copy()
-                df_local["Include"] = True
-                st.session_state[f"df_{sess['id']}"] = df_local
-                st.rerun()
-            if colB.button(f"❌ Include None", key=f"include_none_{sess['id']}"):
-                df_local = st.session_state[f"df_{sess['id']}"].copy()
-                df_local["Include"] = False
-                st.session_state[f"df_{sess['id']}"] = df_local
-                st.rerun()
-
-            edited_df = st.data_editor(
-                st.session_state[f"df_{sess['id']}"],
-                use_container_width=True,
-                height=400,
-                column_config={
-                    "Include": st.column_config.CheckboxColumn("Include", width=80),
-                    "Year": st.column_config.NumberColumn("Year", width="small"),
-                    "Title": st.column_config.TextColumn("Title", width="large"),
-                    "Authors": st.column_config.TextColumn("Authors", width="medium"),
-                    "Journal": st.column_config.TextColumn("Journal", width="medium"),
-                    "Abstract": st.column_config.TextColumn("Abstract (double click to expand)", width="large", disabled=False),
-                    "Has PDF": st.column_config.TextColumn("PDF", width="small"),
-                    "Phrases": st.column_config.TextColumn("Matched Phrases", width="medium"),
-                    "Source(s)": st.column_config.TextColumn("Source(s)", width="medium"),
-                },
-                hide_index=True,
-                key=editor_key
-            )
-            new_included = set()
-            for row_idx, row in edited_df.iterrows():
-                if row["Include"]:
-                    new_included.add(row_idx)
-            sess["included_indices"] = new_included
-            st.session_state[f"df_{sess['id']}"] = edited_df
-            st.caption(f"📌 {len(new_included)} rows included from this search.")
-
-    if st.button("🔄 Apply Selected Records", use_container_width=True):
-        all_included = []
-        for sess in st.session_state.search_sessions:
-            included = sess.get("included_indices", set())
-            for row_idx in included:
-                if row_idx < len(sess["flat_rows"]):
-                    all_included.append(sess["flat_rows"][row_idx])
-        seen = set()
-        download_rows = []
-        for year, r in all_included:
-            key = r.get("id") or r.get("doi_url") or f"{r['title'].strip().lower()}|{r['year']}"
-            if key not in seen:
-                seen.add(key)
-                download_rows.append((year, r))
-        st.session_state.download_rows = download_rows
-        st.success(f"✅ Download list updated: {len(download_rows)} unique records.")
-        st.rerun()
-
-    if st.session_state.download_rows:
-        download_rows = st.session_state.download_rows
-        st.subheader(f"📦 Download List – {len(download_rows)} unique included records")
-        st.caption("This is the union of all rows you marked 'Include' across all searches. Download this set below.")
-
-        preview_data = []
-        for i, (year, r) in enumerate(download_rows, start=1):
-            preview_data.append({
-                "No.": i,
-                "Year": year,
-                "Title": r["title"],
-                "Source(s)": ", ".join(r.get("sources", [r.get("source", "Unknown")]))
-            })
-        preview_df = pd.DataFrame(preview_data)
-        st.dataframe(preview_df, use_container_width=True, height=200)
-
-        col_name, col_format, col_layout, col_btn = st.columns([2, 1, 1, 1])
-        with col_name:
-            if st.session_state.search_sessions:
-                first_queries = st.session_state.search_sessions[0]["queries"]
-                summary = "_".join(first_queries)[:50].replace(" ", "_").replace('"', '').replace("'", "")
-                summary = re.sub(r'[^a-zA-Z0-9_]', '', summary)
-                base_name = f"{datetime.now().strftime('%Y-%m-%d')}_{summary}"
-            else:
-                base_name = f"{datetime.now().strftime('%Y-%m-%d')}_download"
-            filename = st.text_input(
-                "📁 Filename (without extension)",
-                value=base_name,
-                help="Customise the base file name before downloading.",
-                key="download_filename"
-            )
-        with col_format:
-            file_format = st.radio("Format", options=["Excel", "CSV"], index=0, key="file_format")
-        with col_layout:
-            if file_format == "Excel":
-                export_mode = st.radio("Layout", options=["Single sheet", "Separate tabs by year"], index=0, key="export_mode")
-            else:
-                export_mode = "Single sheet"
-                st.write("")
-        with col_btn:
-            st.write("")
-            st.write("")
-            if st.button("⬇️ Download File", use_container_width=True, key="download_btn"):
-                all_queries = []
-                all_years = []
-                for sess in st.session_state.search_sessions:
-                    all_queries.extend(sess["queries"])
-                    all_years.extend(sess["years"])
-                all_queries = list(dict.fromkeys(all_queries))
-                all_years = sorted(set(all_years))
-
-                if file_format == "Excel":
-                    ext = ".xlsx"
-                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    output = export_to_excel_bytes(
-                        download_rows,
-                        all_queries,
-                        all_years,
-                        st.session_state.email,
-                        separate_tabs=(export_mode == "Separate tabs by year")
-                    )
-                else:
-                    ext = ".csv"
-                    mime = "text/csv"
-                    output = export_to_csv_bytes(download_rows)
-
-                st.download_button(
-                    label="📥 Click to save",
-                    data=output,
-                    file_name=f"{filename.strip() if filename.strip() else base_name}{ext}",
-                    mime=mime,
-                    use_container_width=True,
-                    key="final_download"
-                )
-    else:
-        st.info("No records in download list yet. Mark rows as 'Include' in any search and click Apply.")
-else:
-    st.info("No searches yet. Fill in the form above and click 'Run Search'.")
+    with st.status("⏳ Fetching full records from OpenAlex
