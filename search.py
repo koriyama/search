@@ -324,7 +324,7 @@ st.markdown("""
 st.title("📚 Literature Search")
 
 # ---- Brief app summary ----
-st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals, and PDF links are all included.")
+st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals and PDF links are all included.")
 
 # ---- OpenAlex description ----
 with st.expander("ℹ️ About this search tool", expanded=False):
