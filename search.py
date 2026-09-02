@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 import time
 import urllib.parse
-from io import BytesIO
+from io import BytesIO, StringIO
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
@@ -179,7 +179,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT FUNCTION – with user choice and Excel Table formatting
+# 4. EXPORT FUNCTIONS – with CSV and Excel (table formatting)
 # ============================================================
 
 def sanitize_for_excel(value):
@@ -187,13 +187,11 @@ def sanitize_for_excel(value):
         return re.sub(r'[\000-\010]|[\013-\014]|[\016-\037]', '', value)
     return value
 
-def write_sheet(ws, rows, header, bold):
+def write_excel_sheet(ws, rows, header, bold):
     """Write data to a worksheet and format as an Excel Table."""
-    # Write header
     for col_idx, h in enumerate(header, start=1):
         cell = ws.cell(row=1, column=col_idx, value=h)
         cell.font = bold
-    # Write data rows
     for r_idx, row in enumerate(rows, start=2):
         ws.cell(row=r_idx, column=1, value=sanitize_for_excel(row["title"]))
         ws.cell(row=r_idx, column=2, value=sanitize_for_excel(row["authors"]))
@@ -208,12 +206,9 @@ def write_sheet(ws, rows, header, bold):
             pdf_cell.hyperlink = row["pdf_url"]
             pdf_cell.font = Font(color="0563C1", underline="single")
         ws.cell(row=r_idx, column=7, value="; ".join(row.get("matched_phrases", [])))
-    # Auto‑adjust column widths
     for i, w in enumerate([50, 30, 30, 70, 35, 45, 25], start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
-    # Freeze header row
     ws.freeze_panes = "A2"
-    # Convert to Excel Table if there is data
     max_row = ws.max_row
     max_col = ws.max_column
     if max_row > 1:
@@ -225,41 +220,33 @@ def write_sheet(ws, rows, header, bold):
 
 def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None, separate_tabs=False):
     wb = Workbook()
-    # Remove default sheet
     if wb.active:
         wb.remove(wb.active)
 
     header = ["Title", "Authors", "Journal", "Abstract", "DOI", "PDF URL", "Matched Phrase(s)"]
     bold = Font(bold=True)
-
-    # Track missing PDFs across all rows
     missing_pdfs_rows = []
 
     if separate_tabs:
-        # Group by year
         by_year = {}
         for year, row in merged_rows:
             by_year.setdefault(year, []).append(row)
         for year in sorted(by_year.keys()):
             ws = wb.create_sheet(title=str(year))
             rows = sorted(by_year[year], key=lambda r: r["title"].lower())
-            write_sheet(ws, rows, header, bold)
-            # Collect missing PDFs
+            write_excel_sheet(ws, rows, header, bold)
             for r in rows:
                 if not r.get("pdf_url"):
                     missing_pdfs_rows.append(r)
     else:
-        # Single sheet – all records
         ws = wb.create_sheet(title="All Records")
-        # Sort by year then title
         rows = sorted([r[1] for r in merged_rows], key=lambda r: (r["year"], r["title"].lower()))
-        write_sheet(ws, rows, header, bold)
-        # Collect missing PDFs
+        write_excel_sheet(ws, rows, header, bold)
         for r in rows:
             if not r.get("pdf_url"):
                 missing_pdfs_rows.append(r)
 
-    # ---- Settings sheet ----
+    # Settings sheet
     settings_ws = wb.create_sheet(title="Search Settings")
     settings_ws.cell(row=1, column=1, value="Setting").font = bold
     settings_ws.cell(row=1, column=2, value="Value").font = bold
@@ -276,7 +263,7 @@ def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None, separ
     settings_ws.column_dimensions["A"].width = 30
     settings_ws.column_dimensions["B"].width = 60
 
-    # ---- Missing PDFs sheet ----
+    # Missing PDFs sheet
     missing_ws = wb.create_sheet(title="Missing PDFs")
     missing_headers = ["Title", "Authors", "Year", "DOI"]
     for col_idx, h in enumerate(missing_headers, start=1):
@@ -299,6 +286,27 @@ def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None, separ
     wb.save(out)
     out.seek(0)
     return out
+
+def export_to_csv_bytes(merged_rows):
+    """Export all records as a single CSV file."""
+    data = []
+    for year, r in merged_rows:
+        data.append({
+            "Year": year,
+            "Title": r["title"],
+            "Authors": r["authors"],
+            "Journal": r["journal"],
+            "Abstract": r["abstract"],
+            "DOI": r["doi_url"],
+            "PDF URL": r["pdf_url"],
+            "Matched Phrases": "; ".join(r.get("matched_phrases", []))
+        })
+    df = pd.DataFrame(data)
+    # Sort by year then title
+    df = df.sort_values(["Year", "Title"]).reset_index(drop=True)
+    out = StringIO()
+    df.to_csv(out, index=False)
+    return out.getvalue().encode('utf-8')
 
 # ============================================================
 # 5. PRE‑FLIGHT COUNT
@@ -324,7 +332,6 @@ if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
-# ---- Title and full About text ----
 st.title("📚 Literature Search")
 st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals and PDF links are all included.")
 
@@ -365,13 +372,13 @@ with st.expander("ℹ️ About this search tool", expanded=False):
 if "email" not in st.session_state:
     st.session_state.email = ""
 if "search_sessions" not in st.session_state:
-    st.session_state.search_sessions = []  # each: {id, phrases, years, work_types, flat_rows, total, timestamp, included_indices: set()}
+    st.session_state.search_sessions = []
 if "do_full_fetch" not in st.session_state:
     st.session_state.do_full_fetch = False
 if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
 if "download_rows" not in st.session_state:
-    st.session_state.download_rows = []  # list of (year, row) – the download list
+    st.session_state.download_rows = []
 
 # ---- FORM ----
 with st.form("search_form"):
@@ -392,7 +399,6 @@ with st.form("search_form"):
             help="Optional, but using a real email gives you 10x more daily searches."
         )
         st.caption("**Providing an email is optional** – without it, you'll have a lower daily quota.")
-        
         work_type_options = ["All types", "article", "book", "book-chapter", "dataset", 
                              "dissertation", "preprint", "conference-paper", "conference-abstract",
                              "book-review", "report", "editorial", "letter", "erratum"]
@@ -406,7 +412,6 @@ with st.form("search_form"):
             work_types = ["All types"]
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
-# ---- Handle submission ----
 if submitted:
     phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
     if not phrases:
@@ -419,7 +424,6 @@ if submitted:
     st.session_state.work_types = work_types
     st.session_state.force_refresh = force_refresh
 
-    # Pre-flight count
     with st.status("🔎 Checking search scope...", expanded=True) as status:
         try:
             total_count = get_total_count(
@@ -445,7 +449,6 @@ if submitted:
         st.session_state.do_full_fetch = True
         st.rerun()
 
-# ---- Fetch and create new search (insert at beginning) ----
 if st.session_state.do_full_fetch:
     phrases = st.session_state.phrases
     years = st.session_state.years
@@ -487,12 +490,10 @@ if st.session_state.do_full_fetch:
     st.session_state.do_full_fetch = False
     st.rerun()
 
-# ---- Display all searches' preview tables (stacked) ----
 if st.session_state.search_sessions:
     st.subheader("📋 All Searches (newest first)")
     st.caption("For each search, tick the rows you want to include. Then click the **Apply** button at the bottom to build the download list.")
 
-    # Store the edited dataframes in session state per search ID
     for idx, sess in enumerate(st.session_state.search_sessions):
         flat_rows = sess["flat_rows"]
         total = sess["total"]
@@ -564,7 +565,6 @@ if st.session_state.search_sessions:
             st.session_state[f"df_{sess['id']}"] = edited_df
             st.caption(f"📌 {len(new_included)} rows included from this search.")
 
-    # ---- Apply button ----
     if st.button("🔄 Apply Selected Records", use_container_width=True):
         all_included = []
         for sess in st.session_state.search_sessions:
@@ -583,7 +583,6 @@ if st.session_state.search_sessions:
         st.success(f"✅ Download list updated: {len(download_rows)} unique records.")
         st.rerun()
 
-    # ---- Display Download List ----
     if st.session_state.download_rows:
         download_rows = st.session_state.download_rows
         st.subheader(f"📦 Download List – {len(download_rows)} unique included records")
@@ -599,33 +598,47 @@ if st.session_state.search_sessions:
         preview_df = pd.DataFrame(preview_data)
         st.dataframe(preview_df, use_container_width=True, height=200)
 
-        # ---- Download section with format choices ----
-        col_name, col_mode, col_btn = st.columns([2, 1, 1])
+        # ---- Download section with format and layout choices ----
+        col_name, col_format, col_layout, col_btn = st.columns([2, 1, 1, 1])
         with col_name:
             if st.session_state.search_sessions:
                 first_phrases = st.session_state.search_sessions[0]["phrases"]
                 summary = "_".join(first_phrases)[:50].replace(" ", "_").replace('"', '').replace("'", "")
                 summary = re.sub(r'[^a-zA-Z0-9_]', '', summary)
-                default_filename = f"{datetime.now().strftime('%Y-%m-%d')}_{summary}"
+                base_name = f"{datetime.now().strftime('%Y-%m-%d')}_{summary}"
             else:
-                default_filename = f"{datetime.now().strftime('%Y-%m-%d')}_download"
+                base_name = f"{datetime.now().strftime('%Y-%m-%d')}_download"
+            # We'll show the filename without extension; we'll add it later based on format
             filename = st.text_input(
                 "📁 Filename (without extension)",
-                value=default_filename,
+                value=base_name,
                 help="Customise the base file name before downloading.",
                 key="download_filename"
             )
-        with col_mode:
-            export_mode = st.radio(
-                "Export as:",
-                options=["Single sheet", "Separate tabs by year"],
+        with col_format:
+            file_format = st.radio(
+                "Format",
+                options=["Excel", "CSV"],
                 index=0,
-                key="export_mode"
+                key="file_format"
             )
+        with col_layout:
+            # Only show layout option for Excel
+            if file_format == "Excel":
+                export_mode = st.radio(
+                    "Layout",
+                    options=["Single sheet", "Separate tabs by year"],
+                    index=0,
+                    key="export_mode"
+                )
+            else:
+                export_mode = "Single sheet"  # dummy
+                st.write("")  # placeholder
         with col_btn:
             st.write("")  # vertical spacer
             st.write("")
             if st.button("⬇️ Download File", use_container_width=True, key="download_btn"):
+                # Prepare data
                 all_phrases = []
                 all_years = []
                 for sess in st.session_state.search_sessions:
@@ -633,24 +646,32 @@ if st.session_state.search_sessions:
                     all_years.extend(sess["years"])
                 all_phrases = list(dict.fromkeys(all_phrases))
                 all_years = sorted(set(all_years))
-                
-                output = export_to_excel_bytes(
-                    download_rows,
-                    all_phrases,
-                    all_years,
-                    st.session_state.email,
-                    separate_tabs=(export_mode == "Separate tabs by year")
-                )
+
+                # Choose extension and generate file
+                if file_format == "Excel":
+                    ext = ".xlsx"
+                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    output = export_to_excel_bytes(
+                        download_rows,
+                        all_phrases,
+                        all_years,
+                        st.session_state.email,
+                        separate_tabs=(export_mode == "Separate tabs by year")
+                    )
+                else:  # CSV
+                    ext = ".csv"
+                    mime = "text/csv"
+                    output = export_to_csv_bytes(download_rows)
+
                 st.download_button(
                     label="📥 Click to save",
                     data=output,
-                    file_name=f"{filename.strip() if filename.strip() else default_filename}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    file_name=f"{filename.strip() if filename.strip() else base_name}{ext}",
+                    mime=mime,
                     use_container_width=True,
                     key="final_download"
                 )
     else:
         st.info("No records in download list yet. Mark rows as 'Include' in any search and click Apply.")
-
 else:
     st.info("No searches yet. Fill in the form above and click 'Run Search'.")
