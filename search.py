@@ -290,14 +290,66 @@ def get_total_count(phrases, years, email, api_key, work_type, fetch_fn):
 # ============================================================
 
 st.set_page_config(page_title="Literature Search", layout="wide")
+
+# ---- Reduce header spacing and add CSS tweaks ----
+st.markdown("""
+<style>
+    .main-header {
+        margin-top: -30px;
+    }
+    .stButton button {
+        width: 100%;
+    }
+    /* Reduce button spacing in columns */
+    div[data-testid="column"]:nth-child(1) {
+        padding-right: 2px;
+    }
+    div[data-testid="column"]:nth-child(2) {
+        padding-left: 2px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("📚 Literature Search")
 
-# ---- SECURELY LOAD THE API KEY ----
-api_key = st.secrets.get("OPENALEX_API_KEY")
+# ---- Brief app summary ----
+st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals, and PDF links are all included.")
 
-if not api_key:
-    st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
-    st.stop()
+# ---- EMAIL WARNING ----
+if st.session_state.get("email") in ["", "your_email@example.com"]:
+    st.warning("⚠️ **Please enter your real email address** in the field below. Without a real email, OpenAlex limits you to the lowest daily quota (only 10 requests). A real email gives you 10x more daily searches.")
+
+# ---- OpenAlex description (with session info inside) ----
+with st.expander("ℹ️ About this search tool", expanded=False):
+    st.markdown("""
+    This tool searches **OpenAlex** – a free, open index of the world's research ecosystem.
+    
+    **What does OpenAlex cover?**
+    - Over **320 million scholarly works**: journal articles, conference papers, books, book chapters, datasets, dissertations, preprints, and more
+    - **Extra coverage** of humanities, non‑English languages, and the Global South
+    - Data from **Crossref, PubMed, arXiv, HAL, DOAJ, ORCID, institutional repositories**, and many other sources
+    - **60 million open access PDFs** parsed directly
+    
+    **Why OpenAlex?**
+    - It is **free and open** – no paywalls, no API keys required (though providing your email gives you faster "polite pool" access)
+    - It is **more comprehensive** than Scopus or Web of Science, with over 464 million works indexed
+    - It includes **datasets, software, and other research objects** beyond just traditional publications
+    
+    **Search tips:**
+    - Use **uppercase** `AND`, `OR`, `NOT` for boolean logic
+    - Use **double quotes** for exact phrase matches (e.g., `"climate change"`)
+    - **Parentheses** group terms (e.g., `(neural OR deep)`)
+    - Non‑ASCII characters (e.g., 守破離) are fully supported
+    - You can filter results by document type using the dropdown below
+    
+    ⚠️ **Cache & Rate limits:** 
+    - The app caches results to speed up repeated searches. 
+    - If you are getting **0 results unexpectedly**, check the **"Force Refresh"** box below and search again.
+    
+    🛡️ **Pre‑flight check:** The app first counts how many works match your search. If the count exceeds 2000, it warns you to narrow your search to avoid excessive API calls. You can still force a full fetch if needed.
+    
+    ℹ️ **Session‑only storage**: Your email and search history are stored **only in your current browser session**. If you close this tab or refresh the page, they will be cleared. No data is stored on any server or shared with anyone.
+    """)
 
 # ---- INITIALISE ALL SESSION STATE KEYS ----
 if "email" not in st.session_state:
@@ -328,47 +380,6 @@ if "flat_rows" not in st.session_state:
     st.session_state.flat_rows = []
 if "total_results" not in st.session_state:
     st.session_state.total_results = 0
-
-# ---- DISCLAIMER ----
-st.info(
-    "ℹ️ **Session‑only storage**: Your email and search history are stored **only in your current browser session**. "
-    "If you close this tab or refresh the page, they will be cleared. "
-    "No data is stored on any server or shared with anyone."
-)
-
-# ---- EMAIL WARNING ----
-if st.session_state.email in ["", "your_email@example.com"]:
-    st.warning("⚠️ **Please enter your real email address** in the field below. Without a real email, OpenAlex limits you to the lowest daily quota (only 10 requests). A real email gives you 10x more daily searches.")
-
-# ---- OpenAlex description ----
-with st.expander("ℹ️ About this search tool", expanded=False):
-    st.markdown("""
-    This tool searches **OpenAlex** – a free, open index of the world's research ecosystem.
-    
-    **What does OpenAlex cover?**
-    - Over **320 million scholarly works**: journal articles, conference papers, books, book chapters, datasets, dissertations, preprints, and more
-    - **Extra coverage** of humanities, non‑English languages, and the Global South
-    - Data from **Crossref, PubMed, arXiv, HAL, DOAJ, ORCID, institutional repositories**, and many other sources
-    - **60 million open access PDFs** parsed directly
-    
-    **Why OpenAlex?**
-    - It is **free and open** – no paywalls, no API keys required (though providing your email gives you faster "polite pool" access)
-    - It is **more comprehensive** than Scopus or Web of Science, with over 464 million works indexed
-    - It includes **datasets, software, and other research objects** beyond just traditional publications
-    
-    **Search tips:**
-    - Use **uppercase** `AND`, `OR`, `NOT` for boolean logic
-    - Use **double quotes** for exact phrase matches (e.g., `"climate change"`)
-    - **Parentheses** group terms (e.g., `(neural OR deep)`)
-    - Non‑ASCII characters (e.g., 守破離) are fully supported
-    - You can filter results by document type using the dropdown below
-    
-    ⚠️ **Cache & Rate limits:** 
-    - The app caches results to speed up repeated searches. 
-    - If you are getting **0 results unexpectedly**, check the **"Force Refresh"** box below and search again.
-    
-    🛡️ **Pre‑flight check:** The app first counts how many works match your search. If the count exceeds 2000, it warns you to narrow your search to avoid excessive API calls. You can still force a full fetch if needed.
-    """)
 
 # ---- THE MAIN FORM ----
 with st.form("search_form"):
@@ -535,13 +546,15 @@ if st.session_state.results_available:
                 "Title": r["title"],
                 "Authors": r["authors"],
                 "Journal": r["journal"],
-                "Abstract": r["abstract"],          # Abstract now after Journal
+                "Abstract": r["abstract"],
                 "Has PDF": "✅" if r["pdf_url"] else "❌",
                 "Phrases": "; ".join(r.get("matched_phrases", []))
             })
         df = pd.DataFrame(all_rows)
 
-        st.subheader("📄 Preview of Results")
+        # ---- Show count in header ----
+        st.subheader(f"📄 Preview of Results ({total} hits)")
+
         st.caption("Check the box next to any row you want to **exclude** from the final download.")
 
         df_with_checkboxes = df.copy()
@@ -550,11 +563,12 @@ if st.session_state.results_available:
         if st.session_state.df_editor is None or len(st.session_state.df_editor) != len(df_with_checkboxes):
             st.session_state.df_editor = df_with_checkboxes
 
-        colA, colB, colC = st.columns([1, 1, 3])
-        if colA.button("✖️ Exclude All"):
+        # ---- Buttons with reduced spacing ----
+        colA, colB = st.columns([1, 1])
+        if colA.button("✖️ Exclude All", use_container_width=True):
             st.session_state.df_editor["Exclude"] = True
             st.rerun()
-        if colB.button("✅ Include All"):
+        if colB.button("✅ Include All", use_container_width=True):
             st.session_state.df_editor["Exclude"] = False
             st.rerun()
 
@@ -563,14 +577,18 @@ if st.session_state.results_available:
             use_container_width=True,
             height=400,
             column_config={
-                "Exclude": st.column_config.CheckboxColumn("Exclude", help="Check to exclude this row from export"),
+                "Exclude": st.column_config.CheckboxColumn(
+                    "Exclude", 
+                    width="small",           # narrow column
+                    help="Check to exclude this row from export"
+                ),
                 "Year": st.column_config.NumberColumn("Year", width="small"),
                 "Title": st.column_config.TextColumn("Title", width="large"),
                 "Authors": st.column_config.TextColumn("Authors", width="medium"),
                 "Journal": st.column_config.TextColumn("Journal", width="medium"),
                 "Abstract": st.column_config.TextColumn(
-                    "Abstract", 
-                    width="large",          # large enough to show a preview
+                    "Abstract (double click to expand)", 
+                    width="large",
                     disabled=True           # prevents accidental editing and fill‑down
                 ),
                 "Has PDF": st.column_config.TextColumn("PDF", width="small"),
@@ -578,9 +596,6 @@ if st.session_state.results_available:
             },
             hide_index=True,
         )
-
-        # 👇 NEW: friendly tip about double‑click
-        st.caption("💡 **Tip:** Double‑click any cell (especially the **Abstract** column) to expand it and view the full content.")
 
         # Update session state with manual edits
         st.session_state.df_editor = edited_df
