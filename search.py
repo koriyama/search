@@ -71,7 +71,7 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – with just_count option
+# 2. SEARCH FUNCTION – with prepaid=true support
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200, 
@@ -99,6 +99,8 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         params["mailto"] = email
     if api_key:
         params["api_key"] = api_key
+        # ---- KEY FIX: Bypass daily free budget, use prepaid credits ----
+        params["prepaid"] = "true"
 
     temp_params = dict(params)
     temp_params["cursor"] = "*"
@@ -144,7 +146,7 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 3. COLLECT FUNCTION – full fetch
+# 3. COLLECT FUNCTION – unchanged
 # ============================================================
 
 def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_type=None, 
@@ -176,7 +178,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT – uses flat_rows (already deduplicated)
+# 4. EXPORT – unchanged
 # ============================================================
 
 ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
@@ -330,11 +332,11 @@ st.info(
     "No data is stored on any server or shared with anyone."
 )
 
-# ---- EMAIL WARNING (if placeholder) ----
+# ---- EMAIL WARNING ----
 if st.session_state.email in ["", "your_email@example.com"]:
     st.warning("⚠️ **Please enter your real email address** in the field below. Without a real email, OpenAlex limits you to the lowest daily quota (only 10 requests). A real email gives you 10x more daily searches.")
 
-# ---- OpenAlex description (minimised by default) ----
+# ---- OpenAlex description ----
 with st.expander("ℹ️ About this search tool", expanded=False):
     st.markdown("""
     This tool searches **OpenAlex** – a free, open index of the world's research ecosystem.
@@ -411,16 +413,13 @@ with st.form("search_form"):
 
 # ---- HANDLE FORM SUBMISSION ----
 if submitted:
-    # Save email to session
     st.session_state.email = email
 
-    # ---- VALIDATE EMAIL ----
     if not email or email == "your_email@example.com" or email.strip() == "":
         st.error("❌ **Please enter your real email address.**")
         st.error("Without a real email, OpenAlex limits you to only ~10 requests per day. Enter your real email and try again.")
         st.stop()
 
-    # Save other inputs
     st.session_state.phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
     st.session_state.years = list(range(int(start_year), int(end_year) + 1))
     st.session_state.work_type = work_type
@@ -432,7 +431,6 @@ if submitted:
         st.error("Please enter at least one search phrase.")
         st.stop()
 
-    # ---- Pre‑flight count ----
     with st.status("🔎 Checking search scope...", expanded=True) as status:
         try:
             total_count = get_total_count(
@@ -449,7 +447,6 @@ if submitted:
             st.error(f"Pre‑flight count failed: {e}")
             st.stop()
 
-    # ---- Check threshold ----
     THRESHOLD = 2000
     if total_count > THRESHOLD:
         st.warning(f"⚠️ **Search too broad!** This search would return approximately **{total_count}** works, which is above the safety threshold of **{THRESHOLD}**. This may consume a large number of API requests and take a long time.")
@@ -459,7 +456,6 @@ if submitted:
         st.warning("- Combining terms with `AND` (e.g., `\"climate change\" AND adaptation`)")
         st.warning("- Limiting the number of phrases per line")
 
-        # Show override option
         force_check = st.checkbox("⚠️ **Force full fetch anyway** (I understand the risks)")
         if force_check:
             st.session_state.force_fetch = True
@@ -469,20 +465,17 @@ if submitted:
         else:
             st.stop()
     else:
-        # Directly proceed to full fetch
         st.session_state.do_full_fetch = True
         st.rerun()
 
 # ---- FULL FETCH ----
 if st.session_state.do_full_fetch:
-    # Retrieve stored parameters
     phrases = st.session_state.phrases
     years = st.session_state.years
     work_type = st.session_state.work_type
     email = st.session_state.email
     force_refresh = st.session_state.force_refresh
 
-    # Cache the full fetch
     @st.cache_data(show_spinner=False)
     def run_collection_cached(phrases_tuple, years_tuple, email, api_key, work_type, refresh_seed):
         return collect(list(phrases_tuple), list(years_tuple), email=email, api_key=api_key, work_type=work_type)
@@ -497,7 +490,6 @@ if st.session_state.do_full_fetch:
             work_type,
             refresh_seed
         )
-        # Deduplicate globally
         seen_keys = set()
         flat_rows = []
         for year, rows in results_by_year.items():
@@ -509,10 +501,8 @@ if st.session_state.do_full_fetch:
         total = len(flat_rows)
         status.update(label=f"✅ Done! Found {total} unique records.", state="complete")
 
-    # Reset the flag
     st.session_state.do_full_fetch = False
 
-    # ---- Show preview ----
     if total > 0:
         all_rows = []
         for year, r in flat_rows:
@@ -590,7 +580,6 @@ if st.session_state.do_full_fetch:
     else:
         st.info("No results to preview.")
 
-    # Save to search history
     search_record = {
         "phrases": ", ".join(phrases),
         "years": f"{years[0]}-{years[-1]}",
@@ -600,7 +589,6 @@ if st.session_state.do_full_fetch:
     }
     st.session_state.search_history.append(search_record)
 
-    # Display history
     if st.session_state.search_history:
         with st.expander("📜 Search History (this session only)"):
             for i, record in enumerate(reversed(st.session_state.search_history)):
