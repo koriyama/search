@@ -73,15 +73,16 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – using `search` parameter (full‑text)
+# 2. SEARCH FUNCTION – with optional expanded index
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200,
                                 session=None, sleep_between=0.1, work_types=None,
-                                just_count=False):
+                                include_expanded=False, just_count=False):
     """
     Query OpenAlex using the `search` parameter (full‑text, with stemming).
-    Filter is used only for year and work types.
+    If include_expanded=True, the `corpus=all` parameter is added to include
+    the expanded index (XPAC) – lower‑quality records from DataCite & repositories.
     """
     session = session or requests.Session()
     cursor = "*"
@@ -90,17 +91,18 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
     # Build filter string (year + work types)
     filter_parts = [f"publication_year:{year}"]
     if work_types and "All types" not in work_types:
-        # OR‑join multiple types (e.g., type:article|type:book)
         type_filter = "|".join(work_types)
         filter_parts.append(f"type:{type_filter}")
     filter_string = ",".join(filter_parts)
 
-    # Main parameters: `search` is the query, `filter` for year/type
+    # Main parameters
     params = {
         "search": phrase,
         "filter": filter_string,
         "per-page": 1 if just_count else per_page,
     }
+    if include_expanded:
+        params["corpus"] = "all"
 
     if email:
         params["mailto"] = email
@@ -152,11 +154,11 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 3. COLLECT FUNCTION – unchanged (works with new signature)
+# 3. COLLECT FUNCTION – passes include_expanded through
 # ============================================================
 
 def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_types=None,
-            fetch_fn=search_openalex_phrase_year):
+            include_expanded=False, fetch_fn=search_openalex_phrase_year):
     by_year = {y: {} for y in years}
     debug_info = {}
 
@@ -165,6 +167,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
             rows, count, debug_url = fetch_fn(
                 phrase, year, email=email, api_key=api_key,
                 sleep_between=sleep_between, work_types=work_types,
+                include_expanded=include_expanded,
                 just_count=False
             )
             debug_info[(phrase, year)] = {
@@ -313,20 +316,21 @@ def export_to_csv_bytes(merged_rows):
     return out.getvalue().encode('utf-8')
 
 # ============================================================
-# 5. PRE‑FLIGHT COUNT
+# 5. PRE‑FLIGHT COUNT – passes include_expanded through
 # ============================================================
 
-def get_total_count(phrases, years, email, api_key, work_types, fetch_fn):
+def get_total_count(phrases, years, email, api_key, work_types, include_expanded, fetch_fn):
     total = 0
     for year in years:
         for phrase in phrases:
             count, _ = fetch_fn(phrase, year, email=email, api_key=api_key,
-                                work_types=work_types, just_count=True)
+                                work_types=work_types, include_expanded=include_expanded,
+                                just_count=True)
             total += count
     return total
 
 # ============================================================
-# 6. STREAMLIT UI – unchanged (keeps all your existing UI)
+# 6. STREAMLIT UI – added toggle for expanded index
 # ============================================================
 
 st.set_page_config(page_title="LitFind", layout="wide")
@@ -370,10 +374,8 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     This tool searches **OpenAlex** – a free, open index of the world's research ecosystem.
 
     **What does OpenAlex cover?**
-    - Over **320 million scholarly works**: journal articles, conference papers, books, book chapters, datasets, dissertations, preprints, and more
-    - **Extra coverage** of humanities, non‑English languages, and the Global South
-    - Data from **Crossref, PubMed, arXiv, HAL, DOAJ, ORCID, institutional repositories**, and many other sources
-    - **60 million open access PDFs** parsed directly
+    - Over **320 million scholarly works** in the default **Core** corpus: journal articles, conference papers, books, book chapters, datasets, dissertations, preprints, and more
+    - An **optional Expanded index** (XPAC) with an additional **190 million** records from DataCite, institutional repositories, and preprints – often with sparser metadata (lower quality). You can enable it with the toggle below.
 
     **Why OpenAlex?**
     - It is **free and open** – no paywalls, no API keys required (though providing your email gives you faster "polite pool" access)
@@ -387,9 +389,10 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     - Field‑specific syntax: `title:"blended learning"`, `author:"Smith"`, `journal:"Nature"`
     - Non‑ASCII characters (e.g., 守破離) are fully supported
     - You can filter results by document type using the dropdown below
+    - Enable the **Expanded index** to include lower‑quality records from repositories – use with caution as it may increase noise
 
-    ⚠️ **Cache & Rate limits:**
-    - The app caches results to speed up repeated searches.
+    ⚠️ **Cache & Rate limits:** 
+    - The app caches results to speed up repeated searches. 
     - If you are getting **0 results unexpectedly**, check the **"Force Refresh"** box below and search again.
 
     🛡️ **Pre‑flight check:** The app first counts how many works match your search. If the count exceeds 2000, it warns you to narrow your search to avoid excessive API calls. You can still force a full fetch if needed.
@@ -430,6 +433,7 @@ with st.form("search_form"):
             help="Optional, but using a real email gives you 10x more daily searches."
         )
         st.caption("**Providing an email is optional** – without it, you'll have a lower daily quota.")
+
         work_type_options = ["All types", "article", "book", "book-chapter", "dataset",
                              "dissertation", "preprint", "conference-paper", "conference-abstract",
                              "book-review", "report", "editorial", "letter", "erratum"]
@@ -441,6 +445,14 @@ with st.form("search_form"):
         )
         if "All types" in work_types:
             work_types = ["All types"]
+
+        # ---- NEW: Expanded index toggle ----
+        include_expanded = st.checkbox(
+            "🌐 Include expanded index (XPAC)",
+            value=False,
+            help="Adds ~190M lower‑quality records from DataCite and repositories. Increases recall but may add noise."
+        )
+
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
 if submitted:
@@ -454,11 +466,13 @@ if submitted:
     st.session_state.years = years
     st.session_state.work_types = work_types
     st.session_state.force_refresh = force_refresh
+    st.session_state.include_expanded = include_expanded
 
     with st.status("🔎 Checking search scope...", expanded=True) as status:
         try:
             total_count = get_total_count(
-                phrases, years, email, api_key, work_types, search_openalex_phrase_year
+                phrases, years, email, api_key, work_types, include_expanded,
+                search_openalex_phrase_year
             )
             st.session_state.preflight_count = total_count
             status.update(label=f"🔎 Found approximately {total_count} matching works.", state="running")
@@ -486,15 +500,19 @@ if st.session_state.do_full_fetch:
     work_types = st.session_state.work_types
     email = st.session_state.email
     force_refresh = st.session_state.force_refresh
+    include_expanded = st.session_state.include_expanded
 
     @st.cache_data(show_spinner=False)
-    def run_collection_cached(phrases_tuple, years_tuple, email, api_key, work_types_tuple, refresh_seed):
-        return collect(list(phrases_tuple), list(years_tuple), email=email, api_key=api_key, work_types=list(work_types_tuple))
+    def run_collection_cached(phrases_tuple, years_tuple, email, api_key, work_types_tuple,
+                              include_expanded, refresh_seed):
+        return collect(list(phrases_tuple), list(years_tuple), email=email, api_key=api_key,
+                       work_types=list(work_types_tuple), include_expanded=include_expanded)
 
     with st.status("⏳ Fetching full records...", expanded=True) as status:
         refresh_seed = random.randint(0, 999999) if force_refresh else 0
         results_by_year, _ = run_collection_cached(
-            tuple(phrases), tuple(years), email, api_key, tuple(work_types), refresh_seed
+            tuple(phrases), tuple(years), email, api_key, tuple(work_types),
+            include_expanded, refresh_seed
         )
         seen_keys = set()
         flat_rows = []
@@ -512,6 +530,7 @@ if st.session_state.do_full_fetch:
         "phrases": phrases,
         "years": years,
         "work_types": work_types,
+        "include_expanded": include_expanded,
         "flat_rows": flat_rows,
         "total": total,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
