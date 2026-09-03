@@ -187,7 +187,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT FUNCTIONS – unchanged
+# 4. EXPORT FUNCTIONS – updated to include filters in settings
 # ============================================================
 
 def sanitize_for_excel(value):
@@ -226,7 +226,8 @@ def write_excel_sheet(ws, rows, header, bold):
         table.tableStyleInfo = style
         ws.add_table(table)
 
-def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None, separate_tabs=False):
+def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None, separate_tabs=False,
+                          filters=None):
     wb = Workbook()
     if wb.active:
         wb.remove(wb.active)
@@ -258,7 +259,7 @@ def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None, separ
     settings_ws = wb.create_sheet(title="Search Settings")
     settings_ws.cell(row=1, column=1, value="Setting").font = bold
     settings_ws.cell(row=1, column=2, value="Value").font = bold
-    settings_ws.cell(row=2, column=1, value="Exact phrases searched")
+    settings_ws.cell(row=2, column=1, value="Queries searched")
     settings_ws.cell(row=2, column=2, value="; ".join(all_phrases))
     settings_ws.cell(row=3, column=1, value="Publication years")
     settings_ws.cell(row=3, column=2, value=", ".join(str(y) for y in all_years))
@@ -268,6 +269,14 @@ def export_to_excel_bytes(merged_rows, all_phrases, all_years, email=None, separ
     settings_ws.cell(row=5, column=2, value="Yes (server-side)" if st.secrets.get("OPENALEX_API_KEY") else "No")
     settings_ws.cell(row=6, column=1, value="Total included records")
     settings_ws.cell(row=6, column=2, value=len(merged_rows))
+    # Add filters if any
+    row_num = 7
+    if filters:
+        for key, val in filters.items():
+            if val.strip():
+                settings_ws.cell(row=row_num, column=1, value=f"Filter: {key}")
+                settings_ws.cell(row=row_num, column=2, value=val)
+                row_num += 1
     settings_ws.column_dimensions["A"].width = 30
     settings_ws.column_dimensions["B"].width = 60
 
@@ -330,7 +339,7 @@ def get_total_count(phrases, years, email, api_key, work_types, include_expanded
     return total
 
 # ============================================================
-# 6. STREAMLIT UI – added Clear All button
+# 6. STREAMLIT UI – added structured filters
 # ============================================================
 
 st.set_page_config(page_title="LitFind", layout="wide")
@@ -391,6 +400,8 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     - You can filter results by document type using the dropdown below
     - Enable the **Expanded index** to include lower‑quality records from repositories – use with caution as it may increase noise
 
+    **Optional filters**: Use the fields on the right to add common constraints (Author, Title, Journal, Abstract, Institution). They will be combined with each query using `AND`.
+
     ⚠️ **Cache & Rate limits:** 
     - The app caches results to speed up repeated searches. 
     - If you are getting **0 results unexpectedly**, check the **"Force Refresh"** box below and search again.
@@ -414,14 +425,12 @@ if "force_refresh" not in st.session_state:
 if "download_rows" not in st.session_state:
     st.session_state.download_rows = []
 
-# ---- Clear All button (above the search form) ----
+# ---- Clear All button ----
 col_clear, col_spacer = st.columns([1, 5])
 with col_clear:
     if st.button("🗑️ Clear All Searches", use_container_width=True):
-        # Reset all search-related session state
         st.session_state.search_sessions = []
         st.session_state.download_rows = []
-        # Also remove any stored dataframes for editors
         for key in list(st.session_state.keys()):
             if key.startswith("df_"):
                 del st.session_state[key]
@@ -432,7 +441,7 @@ with st.form("search_form"):
     col1, col2 = st.columns([1, 1])
     with col1:
         phrases_input = st.text_area(
-            "🔍 Search Phrases",
+            "🔍 Search Queries",
             value='"epistemic cognition" AND EFL',
             help="Each line is a separate query. Use boolean operators and field prefixes like title:, author:, journal:"
         )
@@ -466,25 +475,69 @@ with st.form("search_form"):
             help="Adds ~190M lower‑quality records from DataCite and repositories. Increases recall but may add noise."
         )
 
+        # ---- NEW: Structured filters ----
+        st.markdown("---")
+        st.markdown("**🔍 Optional Filters (AND with each query)**")
+        st.caption("Leave blank to skip.")
+        filter_author = st.text_input("Author", placeholder="e.g., Smith or \"John Smith\"")
+        filter_title = st.text_input("Title", placeholder="e.g., \"blended learning\"")
+        filter_journal = st.text_input("Journal", placeholder="e.g., Nature")
+        filter_abstract = st.text_input("Abstract", placeholder="e.g., \"climate change\"")
+        filter_institution = st.text_input("Institution", placeholder="e.g., Harvard University")
+
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
 if submitted:
-    phrases = [p.strip() for p in phrases_input.splitlines() if p.strip()]
-    if not phrases:
-        st.error("Please enter at least one search phrase.")
+    # Read main queries
+    base_queries = [p.strip() for p in phrases_input.splitlines() if p.strip()]
+    if not base_queries:
+        st.error("Please enter at least one search query.")
         st.stop()
+
+    # Build filter string from structured fields
+    filter_parts = []
+    if filter_author.strip():
+        filter_parts.append(f"author:{filter_author.strip()}")
+    if filter_title.strip():
+        filter_parts.append(f"title:{filter_title.strip()}")
+    if filter_journal.strip():
+        filter_parts.append(f"journal:{filter_journal.strip()}")
+    if filter_abstract.strip():
+        filter_parts.append(f"abstract:{filter_abstract.strip()}")
+    if filter_institution.strip():
+        filter_parts.append(f"institution:{filter_institution.strip()}")
+
+    filters = " AND ".join(filter_parts) if filter_parts else ""
+
+    # Build full queries: each base query + AND filters if any
+    full_queries = []
+    for q in base_queries:
+        if filters:
+            full_queries.append(f"{q} AND {filters}")
+        else:
+            full_queries.append(q)
+
+    # Store all relevant info in session
     years = list(range(int(start_year), int(end_year) + 1))
     st.session_state.email = email
-    st.session_state.phrases = phrases
+    st.session_state.base_queries = base_queries  # for display
+    st.session_state.full_queries = full_queries  # for searching
     st.session_state.years = years
     st.session_state.work_types = work_types
     st.session_state.force_refresh = force_refresh
     st.session_state.include_expanded = include_expanded
+    st.session_state.filters = {
+        "Author": filter_author.strip(),
+        "Title": filter_title.strip(),
+        "Journal": filter_journal.strip(),
+        "Abstract": filter_abstract.strip(),
+        "Institution": filter_institution.strip(),
+    } if filters else {}
 
     with st.status("🔎 Checking search scope...", expanded=True) as status:
         try:
             total_count = get_total_count(
-                phrases, years, email, api_key, work_types, include_expanded,
+                full_queries, years, email, api_key, work_types, include_expanded,
                 search_openalex_phrase_year
             )
             st.session_state.preflight_count = total_count
@@ -508,23 +561,25 @@ if submitted:
         st.rerun()
 
 if st.session_state.do_full_fetch:
-    phrases = st.session_state.phrases
+    full_queries = st.session_state.full_queries
+    base_queries = st.session_state.base_queries
     years = st.session_state.years
     work_types = st.session_state.work_types
     email = st.session_state.email
     force_refresh = st.session_state.force_refresh
     include_expanded = st.session_state.include_expanded
+    filters = st.session_state.filters
 
     @st.cache_data(show_spinner=False)
-    def run_collection_cached(phrases_tuple, years_tuple, email, api_key, work_types_tuple,
+    def run_collection_cached(queries_tuple, years_tuple, email, api_key, work_types_tuple,
                               include_expanded, refresh_seed):
-        return collect(list(phrases_tuple), list(years_tuple), email=email, api_key=api_key,
+        return collect(list(queries_tuple), list(years_tuple), email=email, api_key=api_key,
                        work_types=list(work_types_tuple), include_expanded=include_expanded)
 
     with st.status("⏳ Fetching full records...", expanded=True) as status:
         refresh_seed = random.randint(0, 999999) if force_refresh else 0
         results_by_year, _ = run_collection_cached(
-            tuple(phrases), tuple(years), email, api_key, tuple(work_types),
+            tuple(full_queries), tuple(years), email, api_key, tuple(work_types),
             include_expanded, refresh_seed
         )
         seen_keys = set()
@@ -540,10 +595,12 @@ if st.session_state.do_full_fetch:
 
     new_search = {
         "id": datetime.now().strftime("%Y%m%d_%H%M%S"),
-        "phrases": phrases,
+        "base_queries": base_queries,
+        "full_queries": full_queries,
         "years": years,
         "work_types": work_types,
         "include_expanded": include_expanded,
+        "filters": filters,
         "flat_rows": flat_rows,
         "total": total,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -564,6 +621,15 @@ if st.session_state.search_sessions:
             continue
         included_indices = sess.get("included_indices", set())
 
+        # Build display string: show base queries and filters if any
+        display_queries = sess.get("base_queries", sess.get("full_queries", []))
+        filters_display = sess.get("filters", {})
+        filter_str = ""
+        if filters_display:
+            active = [f"{k}:{v}" for k, v in filters_display.items() if v.strip()]
+            if active:
+                filter_str = " [filters: " + ", ".join(active) + "]"
+
         all_rows = []
         for i, (year, r) in enumerate(flat_rows):
             all_rows.append({
@@ -582,7 +648,7 @@ if st.session_state.search_sessions:
         if f"df_{sess['id']}" not in st.session_state:
             st.session_state[f"df_{sess['id']}"] = df
 
-        with st.expander(f"Search {idx+1}: {sess['phrases'][0][:60]}… ({total} records, {len(included_indices)} included)", expanded=(idx < 2)):
+        with st.expander(f"Search {idx+1}: {display_queries[0][:60]}…{filter_str} ({total} records, {len(included_indices)} included)", expanded=(idx < 2)):
             colA, colB = st.columns([1, 1])
             if colA.button(f"✅ Include All", key=f"include_all_{sess['id']}"):
                 df_local = st.session_state[f"df_{sess['id']}"].copy()
@@ -665,8 +731,8 @@ if st.session_state.search_sessions:
         col_name, col_format, col_layout, col_btn = st.columns([2, 1, 1, 1])
         with col_name:
             if st.session_state.search_sessions:
-                first_phrases = st.session_state.search_sessions[0]["phrases"]
-                summary = "_".join(first_phrases)[:50].replace(" ", "_").replace('"', '').replace("'", "")
+                first_base = st.session_state.search_sessions[0].get("base_queries", [""])[0]
+                summary = "_".join([first_base])[:50].replace(" ", "_").replace('"', '').replace("'", "")
                 summary = re.sub(r'[^a-zA-Z0-9_]', '', summary)
                 base_name = f"{datetime.now().strftime('%Y-%m-%d')}_{summary}"
             else:
@@ -699,12 +765,17 @@ if st.session_state.search_sessions:
             st.write("")  # vertical spacer
             st.write("")
             if st.button("⬇️ Download File", use_container_width=True, key="download_btn"):
-                all_phrases = []
+                # Collect all base queries and filters for settings
+                all_base_queries = []
                 all_years = []
+                all_filters = {}
                 for sess in st.session_state.search_sessions:
-                    all_phrases.extend(sess["phrases"])
+                    all_base_queries.extend(sess.get("base_queries", sess.get("full_queries", [])))
                     all_years.extend(sess["years"])
-                all_phrases = list(dict.fromkeys(all_phrases))
+                    # Merge filters (they should be the same for all sessions, but we'll take the last one)
+                    if sess.get("filters"):
+                        all_filters = sess["filters"]
+                all_base_queries = list(dict.fromkeys(all_base_queries))
                 all_years = sorted(set(all_years))
 
                 if file_format == "Excel":
@@ -712,10 +783,11 @@ if st.session_state.search_sessions:
                     mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     output = export_to_excel_bytes(
                         download_rows,
-                        all_phrases,
+                        all_base_queries,
                         all_years,
                         st.session_state.email,
-                        separate_tabs=(export_mode == "Separate tabs by year")
+                        separate_tabs=(export_mode == "Separate tabs by year"),
+                        filters=all_filters
                     )
                 else:
                     ext = ".csv"
