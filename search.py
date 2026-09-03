@@ -339,7 +339,7 @@ def get_total_count(phrases, years, email, api_key, work_types, include_expanded
     return total
 
 # ============================================================
-# 6. STREAMLIT UI – added structured filters
+# 6. STREAMLIT UI – with dropdown‑based filter builder
 # ============================================================
 
 st.set_page_config(page_title="LitFind", layout="wide")
@@ -400,17 +400,7 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     - You can filter results by document type using the dropdown below
     - Enable the **Expanded index** to include lower‑quality records from repositories – use with caution as it may increase noise
 
-    **Optional filters**: Use the fields on the right to add common constraints (Author, Title, Journal, Abstract, Institution). They will be combined with each query using `AND`.
-
-    ⚠️ **Cache & Rate limits:** 
-    - The app caches results to speed up repeated searches. 
-    - If you are getting **0 results unexpectedly**, check the **"Force Refresh"** box below and search again.
-
-    🛡️ **Pre‑flight check:** The app first counts how many works match your search. If the count exceeds 2000, it warns you to narrow your search to avoid excessive API calls. You can still force a full fetch if needed.
-
-    ℹ️ **Session‑only storage**: Your email and search history are stored **only in your current browser session**. If you close this tab or refresh the page, they will be cleared. No data is stored on any server or shared with anyone.
-
-    🔄 **How selection works**: Each search has its own preview table with **Include** checkboxes. After marking rows, click the **"Apply Selected Records"** button below all tables. This collects all included rows from all searches, removes duplicates, and builds a download list. You can later refine any search's selections and re‑apply.
+    **Optional filters**: Use the builder on the right to add constraints (Author, Title, Journal, Abstract, Institution). Each filter is combined with `AND`. They are applied to all queries.
     """)
 
 # ---- Session state ----
@@ -424,6 +414,8 @@ if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
 if "download_rows" not in st.session_state:
     st.session_state.download_rows = []
+if "filters_list" not in st.session_state:
+    st.session_state.filters_list = []  # list of {"field": "author", "value": "Smith"}
 
 # ---- Clear All button ----
 col_clear, col_spacer = st.columns([1, 5])
@@ -431,19 +423,56 @@ with col_clear:
     if st.button("🗑️ Clear All Searches", use_container_width=True):
         st.session_state.search_sessions = []
         st.session_state.download_rows = []
+        st.session_state.filters_list = []
         for key in list(st.session_state.keys()):
             if key.startswith("df_"):
                 del st.session_state[key]
         st.rerun()
 
-# ---- FORM ----
+# ---- Filter builder (outside the main form) ----
+with st.container():
+    col_left, col_right = st.columns([1, 1])
+    with col_right:
+        st.markdown("**🔍 Optional Filters**")
+        st.caption("Add constraints combined with AND.")
+
+        # Layout for adding a filter
+        col_field, col_value, col_add = st.columns([2, 3, 1])
+        with col_field:
+            field_options = ["Author", "Title", "Journal", "Abstract", "Institution"]
+            selected_field = st.selectbox("Field", options=field_options, key="filter_field", label_visibility="collapsed")
+        with col_value:
+            filter_value = st.text_input("Value", key="filter_value", placeholder="e.g., Smith or \"John Smith\"", label_visibility="collapsed")
+        with col_add:
+            # Add button – when clicked, appends the filter if value is not empty
+            if st.button("➕ Add", use_container_width=True):
+                if filter_value.strip():
+                    st.session_state.filters_list.append({"field": selected_field.lower(), "value": filter_value.strip()})
+                    st.rerun()
+
+        # Display current filters with remove buttons
+        if st.session_state.filters_list:
+            for i, f in enumerate(st.session_state.filters_list):
+                col_f, col_v, col_del = st.columns([2, 3, 1])
+                with col_f:
+                    st.caption(f"**{f['field'].capitalize()}**")
+                with col_v:
+                    st.caption(f"`{f['value']}`")
+                with col_del:
+                    if st.button("✕", key=f"del_filter_{i}"):
+                        del st.session_state.filters_list[i]
+                        st.rerun()
+        else:
+            st.caption("*No active filters*")
+
+# ---- Main search form ----
 with st.form("search_form"):
     col1, col2 = st.columns([1, 1])
     with col1:
         phrases_input = st.text_area(
             "🔍 Search Queries",
             value='"epistemic cognition" AND EFL',
-            help="Each line is a separate query. Use boolean operators and field prefixes like title:, author:, journal:"
+            help="Each line is a separate query. Use boolean operators and field prefixes."
         )
         start_year = st.number_input("Start Year", min_value=1900, max_value=2030, value=2020, step=1)
         end_year = st.number_input("End Year", min_value=1900, max_value=2030, value=2026, step=1)
@@ -475,64 +504,41 @@ with st.form("search_form"):
             help="Adds ~190M lower‑quality records from DataCite and repositories. Increases recall but may add noise."
         )
 
-        # ---- NEW: Structured filters ----
-        st.markdown("---")
-        st.markdown("**🔍 Optional Filters (AND with each query)**")
-        st.caption("Leave blank to skip.")
-        filter_author = st.text_input("Author", placeholder="e.g., Smith or \"John Smith\"")
-        filter_title = st.text_input("Title", placeholder="e.g., \"blended learning\"")
-        filter_journal = st.text_input("Journal", placeholder="e.g., Nature")
-        filter_abstract = st.text_input("Abstract", placeholder="e.g., \"climate change\"")
-        filter_institution = st.text_input("Institution", placeholder="e.g., Harvard University")
-
     submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
 if submitted:
-    # Read main queries
     base_queries = [p.strip() for p in phrases_input.splitlines() if p.strip()]
     if not base_queries:
         st.error("Please enter at least one search query.")
         st.stop()
 
-    # Build filter string from structured fields
+    # Build filter string from the current filters_list
     filter_parts = []
-    if filter_author.strip():
-        filter_parts.append(f"author:{filter_author.strip()}")
-    if filter_title.strip():
-        filter_parts.append(f"title:{filter_title.strip()}")
-    if filter_journal.strip():
-        filter_parts.append(f"journal:{filter_journal.strip()}")
-    if filter_abstract.strip():
-        filter_parts.append(f"abstract:{filter_abstract.strip()}")
-    if filter_institution.strip():
-        filter_parts.append(f"institution:{filter_institution.strip()}")
-
-    filters = " AND ".join(filter_parts) if filter_parts else ""
+    for f in st.session_state.filters_list:
+        field = f["field"]
+        value = f["value"]
+        filter_parts.append(f"{field}:{value}")
+    filters_str = " AND ".join(filter_parts) if filter_parts else ""
 
     # Build full queries: each base query + AND filters if any
     full_queries = []
     for q in base_queries:
-        if filters:
-            full_queries.append(f"{q} AND {filters}")
+        if filters_str:
+            full_queries.append(f"{q} AND {filters_str}")
         else:
             full_queries.append(q)
 
-    # Store all relevant info in session
     years = list(range(int(start_year), int(end_year) + 1))
     st.session_state.email = email
-    st.session_state.base_queries = base_queries  # for display
-    st.session_state.full_queries = full_queries  # for searching
+    st.session_state.base_queries = base_queries
+    st.session_state.full_queries = full_queries
     st.session_state.years = years
     st.session_state.work_types = work_types
     st.session_state.force_refresh = force_refresh
     st.session_state.include_expanded = include_expanded
-    st.session_state.filters = {
-        "Author": filter_author.strip(),
-        "Title": filter_title.strip(),
-        "Journal": filter_journal.strip(),
-        "Abstract": filter_abstract.strip(),
-        "Institution": filter_institution.strip(),
-    } if filters else {}
+    # Store filters as dict for display in settings
+    filters_dict = {f["field"].capitalize(): f["value"] for f in st.session_state.filters_list}
+    st.session_state.filters = filters_dict
 
     with st.status("🔎 Checking search scope...", expanded=True) as status:
         try:
@@ -621,7 +627,6 @@ if st.session_state.search_sessions:
             continue
         included_indices = sess.get("included_indices", set())
 
-        # Build display string: show base queries and filters if any
         display_queries = sess.get("base_queries", sess.get("full_queries", []))
         filters_display = sess.get("filters", {})
         filter_str = ""
@@ -727,7 +732,7 @@ if st.session_state.search_sessions:
         preview_df = pd.DataFrame(preview_data)
         st.dataframe(preview_df, use_container_width=True, height=200)
 
-        # ---- Download section with format and layout choices ----
+        # ---- Download section ----
         col_name, col_format, col_layout, col_btn = st.columns([2, 1, 1, 1])
         with col_name:
             if st.session_state.search_sessions:
@@ -765,14 +770,12 @@ if st.session_state.search_sessions:
             st.write("")  # vertical spacer
             st.write("")
             if st.button("⬇️ Download File", use_container_width=True, key="download_btn"):
-                # Collect all base queries and filters for settings
                 all_base_queries = []
                 all_years = []
                 all_filters = {}
                 for sess in st.session_state.search_sessions:
                     all_base_queries.extend(sess.get("base_queries", sess.get("full_queries", [])))
                     all_years.extend(sess["years"])
-                    # Merge filters (they should be the same for all sessions, but we'll take the last one)
                     if sess.get("filters"):
                         all_filters = sess["filters"]
                 all_base_queries = list(dict.fromkeys(all_base_queries))
