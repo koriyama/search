@@ -330,7 +330,7 @@ def get_total_count(phrases, years, email, api_key, work_types, include_expanded
     return total
 
 # ============================================================
-# 6. STREAMLIT UI – added toggle for expanded index
+# 6. STREAMLIT UI – added Clear All button
 # ============================================================
 
 st.set_page_config(page_title="LitFind", layout="wide")
@@ -414,6 +414,19 @@ if "force_refresh" not in st.session_state:
 if "download_rows" not in st.session_state:
     st.session_state.download_rows = []
 
+# ---- Clear All button (above the search form) ----
+col_clear, col_spacer = st.columns([1, 5])
+with col_clear:
+    if st.button("🗑️ Clear All Searches", use_container_width=True):
+        # Reset all search-related session state
+        st.session_state.search_sessions = []
+        st.session_state.download_rows = []
+        # Also remove any stored dataframes for editors
+        for key in list(st.session_state.keys()):
+            if key.startswith("df_"):
+                del st.session_state[key]
+        st.rerun()
+
 # ---- FORM ----
 with st.form("search_form"):
     col1, col2 = st.columns([1, 1])
@@ -446,7 +459,7 @@ with st.form("search_form"):
         if "All types" in work_types:
             work_types = ["All types"]
 
-        # ---- NEW: Expanded index toggle ----
+        # Expanded index toggle
         include_expanded = st.checkbox(
             "🌐 Include expanded index (XPAC)",
             value=False,
