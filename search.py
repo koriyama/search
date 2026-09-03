@@ -72,18 +72,14 @@ def normalize_work(work):
 
 OPENALEX_URL = "https://api.openalex.org/works"
 AUTHORS_URL = "https://api.openalex.org/authors"
+INSTITUTIONS_URL = "https://api.openalex.org/institutions"
 
 # ============================================================
-# 2. HELPER: Resolve author name → OpenAlex ID(s)
+# 2. HELPERS: Resolve author & institution names → IDs
 # ============================================================
 
 @st.cache_data(ttl=3600)
 def get_author_ids_by_name(name, api_key=None):
-    """
-    Search for authors by display_name and return a list of OpenAlex IDs.
-    Uses the .search suffix for fuzzy matching; returns up to 10 matches.
-    """
-    # Remove any existing quotes for the search
     clean_name = name.strip('"')
     params = {
         "filter": f'display_name.search:"{clean_name}"',
@@ -106,23 +102,41 @@ def get_author_ids_by_name(name, api_key=None):
         st.warning(f"Could not resolve author name '{name}': {e}")
         return []
 
+@st.cache_data(ttl=3600)
+def get_institution_ids_by_name(name, api_key=None):
+    clean_name = name.strip('"')
+    params = {
+        "filter": f'display_name.search:"{clean_name}"',
+        "per-page": 10,
+        "select": "id,display_name",
+    }
+    if api_key:
+        params["api_key"] = api_key
+    try:
+        resp = requests.get(INSTITUTIONS_URL, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        ids = []
+        for inst in data.get("results", []):
+            full_id = inst.get("id", "")
+            if full_id:
+                ids.append(full_id.split("/")[-1])
+        return ids
+    except Exception as e:
+        st.warning(f"Could not resolve institution name '{name}': {e}")
+        return []
+
 # ============================================================
-# 3. SEARCH FUNCTION – with author fallback
+# 3. SEARCH FUNCTION
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200,
                                 session=None, sleep_between=0.1, work_types=None,
                                 include_expanded=False, extra_filters=None, just_count=False):
-    """
-    Query OpenAlex.
-    - phrase: the `search` parameter (full‑text) – includes base query + title/abstract/fallback author.
-    - extra_filters: string to append to the `filter` parameter (resolved author IDs, institution, journal).
-    """
     session = session or requests.Session()
     cursor = "*"
     count = 0
 
-    # Build filter string: year, work types, and extra_filters
     filter_parts = [f"publication_year:{year}"]
     if work_types and "All types" not in work_types:
         type_filter = "|".join(work_types)
@@ -188,7 +202,7 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 4. COLLECT FUNCTION – passes extra_filters
+# 4. COLLECT FUNCTION
 # ============================================================
 
 def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_types=None,
@@ -355,7 +369,7 @@ def export_to_csv_bytes(merged_rows):
     return out.getvalue().encode('utf-8')
 
 # ============================================================
-# 6. PRE‑FLIGHT COUNT – passes extra_filters
+# 6. PRE‑FLIGHT COUNT
 # ============================================================
 
 def get_total_count(phrases, years, email, api_key, work_types, include_expanded,
@@ -371,7 +385,7 @@ def get_total_count(phrases, years, email, api_key, work_types, include_expanded
     return total
 
 # ============================================================
-# 7. STREAMLIT UI – with author name resolution + fallback
+# 7. STREAMLIT UI – with resolution for Author & Institution
 # ============================================================
 
 st.set_page_config(page_title="LitFind", layout="wide")
@@ -428,8 +442,9 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     - Use **double quotes** for exact phrase matches (e.g., `"climate change"`)
     - **Parentheses** group terms (e.g., `(neural OR deep)`)
     - Field‑specific syntax: `title:"blended learning"`, `abstract:"climate"` – these go into the `search` parameter (full‑text).
-    - **Author** filter: we try to resolve the name to an OpenAlex author ID for exact matching. If no ID is found, we fall back to a broader search.
-    - **Institution, Journal** filters use the `filter` parameter (exact match).
+    - **Author** filter: resolves the name to an OpenAlex author ID (`authorships.author.id`) for exact matching. Fallback to broader search if no ID found.
+    - **Institution** filter: resolves the name to an OpenAlex institution ID (`authorships.institutions.id`) for exact matching. Fallback to broader search if no ID found.
+    - **Journal** filter: uses `primary_location.source.display_name` (exact match).
 
     **Optional filters**: Use the builder below to add constraints. Each filter is combined with `AND`.
     """)
@@ -493,10 +508,10 @@ with col_right:
         help="Adds ~190M lower‑quality records from DataCite and repositories. Increases recall but may add noise."
     )
 
-    # 4. Optional Filters builder (below toggles)
+    # 4. Optional Filters builder
     st.markdown("---")
     st.markdown("**🔍 Optional Filters**")
-    st.caption("Add constraints combined with AND. Author name is resolved to ID for exact match, with fallback.")
+    st.caption("Add constraints combined with AND. Author & Institution names are resolved to IDs for exact matching.")
 
     col_field, col_value, col_add = st.columns([2, 3, 1])
     with col_field:
@@ -542,8 +557,7 @@ if submitted:
         st.error("Please enter at least one search query.")
         st.stop()
 
-    # Separate filters into those for 'search' (title, abstract, and author fallback)
-    # and those for 'filter' (resolved author IDs, institution, journal)
+    # Separate filters into 'search' and 'filter'
     search_filter_parts = []
     filter_extra_parts = []
 
@@ -559,26 +573,30 @@ if submitted:
         elif field == "abstract":
             search_filter_parts.append(f"abstract:{value}")
         elif field == "author":
-            # Try to resolve to ID(s)
             clean_name = value.strip('"')
             author_ids = get_author_ids_by_name(clean_name, api_key)
             if author_ids:
-                # OR multiple IDs
                 id_filter = "|".join(author_ids)
                 filter_extra_parts.append(f'authorships.author.id:{id_filter}')
             else:
-                # Fallback: add to search (less precise)
                 search_filter_parts.append(f'author:{value}')
                 st.info(f"Author name '{value}' not found as a specific OpenAlex author; using broader search.")
         elif field == "institution":
-            filter_extra_parts.append(f'institutions.display_name:{value}')
+            clean_name = value.strip('"')
+            inst_ids = get_institution_ids_by_name(clean_name, api_key)
+            if inst_ids:
+                id_filter = "|".join(inst_ids)
+                filter_extra_parts.append(f'authorships.institutions.id:{id_filter}')
+            else:
+                search_filter_parts.append(f'institution:{value}')
+                st.info(f"Institution name '{value}' not found as a specific OpenAlex institution; using broader search.")
         elif field == "journal":
+            # Journal name is a valid filter field
             filter_extra_parts.append(f'primary_location.source.display_name:{value}')
 
     search_extra = " AND ".join(search_filter_parts) if search_filter_parts else ""
     filter_extra = ",".join(filter_extra_parts) if filter_extra_parts else None
 
-    # Build full query: base + AND search_extra
     full_queries = []
     for q in base_queries:
         if search_extra:
@@ -595,7 +613,6 @@ if submitted:
     st.session_state.force_refresh = force_refresh
     st.session_state.include_expanded = include_expanded
     st.session_state.filter_extra = filter_extra
-    # Store filters for display
     filters_dict = {f["field"].capitalize(): f["value"] for f in st.session_state.filters_list}
     st.session_state.filters = filters_dict
 
