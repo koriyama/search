@@ -73,20 +73,29 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION – with optional expanded index
+# 2. SEARCH FUNCTION – with separate filter and search parts
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200,
                                 session=None, sleep_between=0.1, work_types=None,
-                                include_expanded=False, just_count=False):
+                                include_expanded=False, extra_filters=None, just_count=False):
+    """
+    Query OpenAlex.
+    - phrase: the `search` parameter (full‑text) – includes base query + title/abstract filters.
+    - extra_filters: string to append to the `filter` parameter (exact‑match fields).
+    """
     session = session or requests.Session()
     cursor = "*"
     count = 0
 
+    # Build filter string: year, work types, and extra_filters (author, institution, journal)
     filter_parts = [f"publication_year:{year}"]
     if work_types and "All types" not in work_types:
         type_filter = "|".join(work_types)
         filter_parts.append(f"type:{type_filter}")
+    if extra_filters:
+        # extra_filters is a comma‑separated string like 'author.display_name:"Jackson",institutions.display_name:"Harvard"'
+        filter_parts.append(extra_filters)
     filter_string = ",".join(filter_parts)
 
     params = {
@@ -146,11 +155,11 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 3. COLLECT FUNCTION
+# 3. COLLECT FUNCTION – passes extra_filters
 # ============================================================
 
 def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_types=None,
-            include_expanded=False, fetch_fn=search_openalex_phrase_year):
+            include_expanded=False, extra_filters=None, fetch_fn=search_openalex_phrase_year):
     by_year = {y: {} for y in years}
     debug_info = {}
 
@@ -160,6 +169,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
                 phrase, year, email=email, api_key=api_key,
                 sleep_between=sleep_between, work_types=work_types,
                 include_expanded=include_expanded,
+                extra_filters=extra_filters,
                 just_count=False
             )
             debug_info[(phrase, year)] = {
@@ -179,7 +189,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT FUNCTIONS – with filters in settings
+# 4. EXPORT FUNCTIONS – unchanged
 # ============================================================
 
 def sanitize_for_excel(value):
@@ -312,21 +322,23 @@ def export_to_csv_bytes(merged_rows):
     return out.getvalue().encode('utf-8')
 
 # ============================================================
-# 5. PRE‑FLIGHT COUNT
+# 5. PRE‑FLIGHT COUNT – passes extra_filters
 # ============================================================
 
-def get_total_count(phrases, years, email, api_key, work_types, include_expanded, fetch_fn):
+def get_total_count(phrases, years, email, api_key, work_types, include_expanded,
+                    extra_filters, fetch_fn):
     total = 0
     for year in years:
         for phrase in phrases:
             count, _ = fetch_fn(phrase, year, email=email, api_key=api_key,
                                 work_types=work_types, include_expanded=include_expanded,
+                                extra_filters=extra_filters,
                                 just_count=True)
             total += count
     return total
 
 # ============================================================
-# 6. STREAMLIT UI – compact layout with filters in right column
+# 6. STREAMLIT UI – compact layout with filter builder
 # ============================================================
 
 st.set_page_config(page_title="LitFind", layout="wide")
@@ -382,13 +394,10 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     - Use **uppercase** `AND`, `OR`, `NOT` for boolean logic
     - Use **double quotes** for exact phrase matches (e.g., `"climate change"`)
     - **Parentheses** group terms (e.g., `(neural OR deep)`)
-    - Field‑specific syntax: `title:"blended learning"`, `author:"Smith"`, `journal:"Nature"`
-    - Non‑ASCII characters (e.g., 守破離) are fully supported
-    - You can filter results by document type using the dropdown below
-    - Enable the **Expanded index** to include lower‑quality records from repositories – use with caution as it may increase noise
+    - Field‑specific syntax: `title:"blended learning"`, `abstract:"climate"` – these go into the `search` parameter (full‑text).
+    - **Author, Institution, Journal** filters use the `filter` parameter (exact match) for more precise results.
 
-    **Optional filters**: Use the builder below to add constraints (Author, Title, Journal, Abstract, Institution). Each filter is combined with `AND`. They are applied to all queries.
-    - The builder **automatically adds quotes** around your value to ensure exact‑phrase matching. You can still type your own quotes if you prefer.
+    **Optional filters**: Use the builder below to add constraints. Each filter is combined with `AND`.
     """)
 
 # ---- Session state ----
@@ -405,10 +414,9 @@ if "download_rows" not in st.session_state:
 if "filters_list" not in st.session_state:
     st.session_state.filters_list = []  # list of {"field": "author", "value": "Smith"}
 
-# ---- LAYOUT: main form on left, extra controls on right ----
+# ---- LAYOUT: left column form, right column controls ----
 col_left, col_right = st.columns([1, 1])
 
-# ---- LEFT COLUMN: Search form ----
 with col_left:
     with st.form("search_form"):
         phrases_input = st.text_area(
@@ -420,13 +428,10 @@ with col_left:
         start_year = st.number_input("Start Year", min_value=1900, max_value=2030, value=2020, step=1)
         end_year = st.number_input("End Year", min_value=1900, max_value=2030, value=2026, step=1)
         force_refresh = st.checkbox("🔄 Force Refresh (Ignore Cache)", value=False)
-
-        # The Run Search button must be inside the form
         submitted = st.form_submit_button("🚀 Run Search", use_container_width=True)
 
-# ---- RIGHT COLUMN: fields that live next to the form, plus filter builder and Clear ----
 with col_right:
-    # 1. Email (outside the form so it's not cleared on submit)
+    # 1. Email
     email = st.text_input(
         "📧 Recommended: Your Email (for OpenAlex polite pool)",
         value=st.session_state.email,
@@ -454,12 +459,11 @@ with col_right:
         help="Adds ~190M lower‑quality records from DataCite and repositories. Increases recall but may add noise."
     )
 
-    # 4. Optional Filters builder (outside the form, below the toggles)
+    # 4. Optional Filters builder (below toggles)
     st.markdown("---")
     st.markdown("**🔍 Optional Filters**")
-    st.caption("Add constraints combined with AND. Quotes are added automatically for exact match.")
+    st.caption("Add constraints combined with AND. Exact match for Author, Institution, Journal.")
 
-    # Layout for adding a filter
     col_field, col_value, col_add = st.columns([2, 3, 1])
     with col_field:
         field_options = ["Author", "Title", "Journal", "Abstract", "Institution"]
@@ -472,7 +476,6 @@ with col_right:
                 st.session_state.filters_list.append({"field": selected_field.lower(), "value": filter_value.strip()})
                 st.rerun()
 
-    # Display current filters with remove buttons
     if st.session_state.filters_list:
         for i, f in enumerate(st.session_state.filters_list):
             col_f, col_v, col_del = st.columns([2, 3, 1])
@@ -487,7 +490,7 @@ with col_right:
     else:
         st.caption("*No active filters*")
 
-    # 5. Clear All button (below filters)
+    # 5. Clear All button
     st.markdown("---")
     if st.button("🗑️ Clear All Searches", use_container_width=True):
         st.session_state.search_sessions = []
@@ -498,29 +501,41 @@ with col_right:
                 del st.session_state[key]
         st.rerun()
 
-# ---- Process the form submission ----
+# ---- Process submission ----
 if submitted:
     base_queries = [p.strip() for p in phrases_input.splitlines() if p.strip()]
     if not base_queries:
         st.error("Please enter at least one search query.")
         st.stop()
 
-    # Build filter string from the current filters_list, auto‑quoting values
-    filter_parts = []
+    # Separate filters into those for 'search' (title, abstract) and those for 'filter' (author, institution, journal)
+    search_filter_parts = []
+    filter_extra_parts = []
     for f in st.session_state.filters_list:
         field = f["field"]
         value = f["value"]
-        # Add quotes if not already present (for exact phrase matching)
+        # Auto‑quote if not already
         if not (value.startswith('"') and value.endswith('"')):
             value = f'"{value}"'
-        filter_parts.append(f"{field}:{value}")
-    filters_str = " AND ".join(filter_parts) if filter_parts else ""
+        if field == "title":
+            search_filter_parts.append(f"title:{value}")
+        elif field == "abstract":
+            search_filter_parts.append(f"abstract:{value}")
+        elif field == "author":
+            filter_extra_parts.append(f'author.display_name:{value}')
+        elif field == "institution":
+            filter_extra_parts.append(f'institutions.display_name:{value}')
+        elif field == "journal":
+            filter_extra_parts.append(f'primary_location.source.display_name:{value}')
 
-    # Build full queries: each base query + AND filters if any
+    search_extra = " AND ".join(search_filter_parts) if search_filter_parts else ""
+    filter_extra = ",".join(filter_extra_parts) if filter_extra_parts else None
+
+    # Build full query: base + AND search_extra
     full_queries = []
     for q in base_queries:
-        if filters_str:
-            full_queries.append(f"{q} AND {filters_str}")
+        if search_extra:
+            full_queries.append(f"{q} AND {search_extra}")
         else:
             full_queries.append(q)
 
@@ -532,7 +547,8 @@ if submitted:
     st.session_state.work_types = work_types
     st.session_state.force_refresh = force_refresh
     st.session_state.include_expanded = include_expanded
-    # Store filters as dict for display in settings
+    st.session_state.filter_extra = filter_extra
+    # Store filters for display
     filters_dict = {f["field"].capitalize(): f["value"] for f in st.session_state.filters_list}
     st.session_state.filters = filters_dict
 
@@ -540,7 +556,7 @@ if submitted:
         try:
             total_count = get_total_count(
                 full_queries, years, email, api_key, work_types, include_expanded,
-                search_openalex_phrase_year
+                filter_extra, search_openalex_phrase_year
             )
             st.session_state.preflight_count = total_count
             status.update(label=f"🔎 Found approximately {total_count} matching works.", state="running")
@@ -562,7 +578,7 @@ if submitted:
         st.session_state.do_full_fetch = True
         st.rerun()
 
-# ---- Full fetch (cached) ----
+# ---- Full fetch ----
 if st.session_state.do_full_fetch:
     full_queries = st.session_state.full_queries
     base_queries = st.session_state.base_queries
@@ -571,19 +587,21 @@ if st.session_state.do_full_fetch:
     email = st.session_state.email
     force_refresh = st.session_state.force_refresh
     include_expanded = st.session_state.include_expanded
+    filter_extra = st.session_state.filter_extra
     filters = st.session_state.filters
 
     @st.cache_data(show_spinner=False)
     def run_collection_cached(queries_tuple, years_tuple, email, api_key, work_types_tuple,
-                              include_expanded, refresh_seed):
+                              include_expanded, filter_extra, refresh_seed):
         return collect(list(queries_tuple), list(years_tuple), email=email, api_key=api_key,
-                       work_types=list(work_types_tuple), include_expanded=include_expanded)
+                       work_types=list(work_types_tuple), include_expanded=include_expanded,
+                       extra_filters=filter_extra)
 
     with st.status("⏳ Fetching full records...", expanded=True) as status:
         refresh_seed = random.randint(0, 999999) if force_refresh else 0
         results_by_year, _ = run_collection_cached(
             tuple(full_queries), tuple(years), email, api_key, tuple(work_types),
-            include_expanded, refresh_seed
+            include_expanded, filter_extra, refresh_seed
         )
         seen_keys = set()
         flat_rows = []
@@ -613,7 +631,7 @@ if st.session_state.do_full_fetch:
     st.session_state.do_full_fetch = False
     st.rerun()
 
-# ---- Display search sessions ----
+# ---- Display search sessions (unchanged) ----
 if st.session_state.search_sessions:
     st.subheader("📋 All Searches (newest first)")
     st.caption("For each search, tick the rows you want to include. Then click the **Apply** button at the bottom to build the download list.")
@@ -730,7 +748,6 @@ if st.session_state.search_sessions:
         preview_df = pd.DataFrame(preview_data)
         st.dataframe(preview_df, use_container_width=True, height=200)
 
-        # ---- Download section ----
         col_name, col_format, col_layout, col_btn = st.columns([2, 1, 1, 1])
         with col_name:
             if st.session_state.search_sessions:
