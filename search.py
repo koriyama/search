@@ -71,9 +71,43 @@ def normalize_work(work):
     }
 
 OPENALEX_URL = "https://api.openalex.org/works"
+AUTHORS_URL = "https://api.openalex.org/authors"
 
 # ============================================================
-# 2. SEARCH FUNCTION – with separate filter and search parts
+# 2. HELPER: Resolve author name → OpenAlex ID(s)
+# ============================================================
+
+@st.cache_data(ttl=3600)
+def get_author_ids_by_name(name, api_key=None):
+    """
+    Search for authors by display_name and return a list of OpenAlex IDs.
+    Uses the .search suffix for fuzzy matching; returns up to 10 matches.
+    """
+    # Remove any existing quotes for the search
+    clean_name = name.strip('"')
+    params = {
+        "filter": f'display_name.search:"{clean_name}"',
+        "per-page": 10,
+        "select": "id,display_name",
+    }
+    if api_key:
+        params["api_key"] = api_key
+    try:
+        resp = requests.get(AUTHORS_URL, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        ids = []
+        for author in data.get("results", []):
+            full_id = author.get("id", "")
+            if full_id:
+                ids.append(full_id.split("/")[-1])
+        return ids
+    except Exception as e:
+        st.warning(f"Could not resolve author name '{name}': {e}")
+        return []
+
+# ============================================================
+# 3. SEARCH FUNCTION – with author fallback
 # ============================================================
 
 def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200,
@@ -81,20 +115,19 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
                                 include_expanded=False, extra_filters=None, just_count=False):
     """
     Query OpenAlex.
-    - phrase: the `search` parameter (full‑text) – includes base query + title/abstract filters.
-    - extra_filters: string to append to the `filter` parameter (exact‑match fields).
+    - phrase: the `search` parameter (full‑text) – includes base query + title/abstract/fallback author.
+    - extra_filters: string to append to the `filter` parameter (resolved author IDs, institution, journal).
     """
     session = session or requests.Session()
     cursor = "*"
     count = 0
 
-    # Build filter string: year, work types, and extra_filters (author, institution, journal)
+    # Build filter string: year, work types, and extra_filters
     filter_parts = [f"publication_year:{year}"]
     if work_types and "All types" not in work_types:
         type_filter = "|".join(work_types)
         filter_parts.append(f"type:{type_filter}")
     if extra_filters:
-        # extra_filters is a comma‑separated string like 'author.display_name:"Jackson",institutions.display_name:"Harvard"'
         filter_parts.append(extra_filters)
     filter_string = ",".join(filter_parts)
 
@@ -155,7 +188,7 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 3. COLLECT FUNCTION – passes extra_filters
+# 4. COLLECT FUNCTION – passes extra_filters
 # ============================================================
 
 def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_types=None,
@@ -189,7 +222,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT FUNCTIONS – unchanged
+# 5. EXPORT FUNCTIONS – unchanged
 # ============================================================
 
 def sanitize_for_excel(value):
@@ -322,7 +355,7 @@ def export_to_csv_bytes(merged_rows):
     return out.getvalue().encode('utf-8')
 
 # ============================================================
-# 5. PRE‑FLIGHT COUNT – passes extra_filters
+# 6. PRE‑FLIGHT COUNT – passes extra_filters
 # ============================================================
 
 def get_total_count(phrases, years, email, api_key, work_types, include_expanded,
@@ -338,7 +371,7 @@ def get_total_count(phrases, years, email, api_key, work_types, include_expanded
     return total
 
 # ============================================================
-# 6. STREAMLIT UI – compact layout with filter builder
+# 7. STREAMLIT UI – with author name resolution + fallback
 # ============================================================
 
 st.set_page_config(page_title="LitFind", layout="wide")
@@ -395,7 +428,8 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     - Use **double quotes** for exact phrase matches (e.g., `"climate change"`)
     - **Parentheses** group terms (e.g., `(neural OR deep)`)
     - Field‑specific syntax: `title:"blended learning"`, `abstract:"climate"` – these go into the `search` parameter (full‑text).
-    - **Author, Institution, Journal** filters use the `filter` parameter (exact match) for more precise results.
+    - **Author** filter: we try to resolve the name to an OpenAlex author ID for exact matching. If no ID is found, we fall back to a broader search.
+    - **Institution, Journal** filters use the `filter` parameter (exact match).
 
     **Optional filters**: Use the builder below to add constraints. Each filter is combined with `AND`.
     """)
@@ -462,7 +496,7 @@ with col_right:
     # 4. Optional Filters builder (below toggles)
     st.markdown("---")
     st.markdown("**🔍 Optional Filters**")
-    st.caption("Add constraints combined with AND. Exact match for Author, Institution, Journal.")
+    st.caption("Add constraints combined with AND. Author name is resolved to ID for exact match, with fallback.")
 
     col_field, col_value, col_add = st.columns([2, 3, 1])
     with col_field:
@@ -508,21 +542,34 @@ if submitted:
         st.error("Please enter at least one search query.")
         st.stop()
 
-    # Separate filters into those for 'search' (title, abstract) and those for 'filter' (author, institution, journal)
+    # Separate filters into those for 'search' (title, abstract, and author fallback)
+    # and those for 'filter' (resolved author IDs, institution, journal)
     search_filter_parts = []
     filter_extra_parts = []
+
     for f in st.session_state.filters_list:
         field = f["field"]
         value = f["value"]
         # Auto‑quote if not already
         if not (value.startswith('"') and value.endswith('"')):
             value = f'"{value}"'
+
         if field == "title":
             search_filter_parts.append(f"title:{value}")
         elif field == "abstract":
             search_filter_parts.append(f"abstract:{value}")
         elif field == "author":
-            filter_extra_parts.append(f'author.display_name:{value}')
+            # Try to resolve to ID(s)
+            clean_name = value.strip('"')
+            author_ids = get_author_ids_by_name(clean_name, api_key)
+            if author_ids:
+                # OR multiple IDs
+                id_filter = "|".join(author_ids)
+                filter_extra_parts.append(f'authorships.author.id:{id_filter}')
+            else:
+                # Fallback: add to search (less precise)
+                search_filter_parts.append(f'author:{value}')
+                st.info(f"Author name '{value}' not found as a specific OpenAlex author; using broader search.")
         elif field == "institution":
             filter_extra_parts.append(f'institutions.display_name:{value}')
         elif field == "journal":
