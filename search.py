@@ -187,7 +187,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT FUNCTIONS – updated to include filters in settings
+# 4. EXPORT FUNCTIONS – with filters in settings
 # ============================================================
 
 def sanitize_for_excel(value):
@@ -339,7 +339,7 @@ def get_total_count(phrases, years, email, api_key, work_types, include_expanded
     return total
 
 # ============================================================
-# 6. STREAMLIT UI – with dropdown‑based filter builder
+# 6. STREAMLIT UI – with dropdown‑based filter builder (auto‑quotes)
 # ============================================================
 
 st.set_page_config(page_title="LitFind", layout="wide")
@@ -401,6 +401,7 @@ with st.expander("ℹ️ About this search tool", expanded=False):
     - Enable the **Expanded index** to include lower‑quality records from repositories – use with caution as it may increase noise
 
     **Optional filters**: Use the builder on the right to add constraints (Author, Title, Journal, Abstract, Institution). Each filter is combined with `AND`. They are applied to all queries.
+    - The builder **automatically adds quotes** around your value to ensure exact‑phrase matching. You can still type your own quotes if you prefer.
     """)
 
 # ---- Session state ----
@@ -434,7 +435,7 @@ with st.container():
     col_left, col_right = st.columns([1, 1])
     with col_right:
         st.markdown("**🔍 Optional Filters**")
-        st.caption("Add constraints combined with AND.")
+        st.caption("Add constraints combined with AND. Quotes are added automatically for exact match.")
 
         # Layout for adding a filter
         col_field, col_value, col_add = st.columns([2, 3, 1])
@@ -444,7 +445,6 @@ with st.container():
         with col_value:
             filter_value = st.text_input("Value", key="filter_value", placeholder="e.g., Smith or \"John Smith\"", label_visibility="collapsed")
         with col_add:
-            # Add button – when clicked, appends the filter if value is not empty
             if st.button("➕ Add", use_container_width=True):
                 if filter_value.strip():
                     st.session_state.filters_list.append({"field": selected_field.lower(), "value": filter_value.strip()})
@@ -512,11 +512,14 @@ if submitted:
         st.error("Please enter at least one search query.")
         st.stop()
 
-    # Build filter string from the current filters_list
+    # Build filter string from the current filters_list, auto‑quoting values
     filter_parts = []
     for f in st.session_state.filters_list:
         field = f["field"]
         value = f["value"]
+        # Add quotes if not already present (for exact phrase matching)
+        if not (value.startswith('"') and value.endswith('"')):
+            value = f'"{value}"'
         filter_parts.append(f"{field}:{value}")
     filters_str = " AND ".join(filter_parts) if filter_parts else ""
 
