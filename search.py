@@ -73,36 +73,41 @@ def normalize_work(work):
 OPENALEX_URL = "https://api.openalex.org/works"
 
 # ============================================================
-# 2. SEARCH FUNCTION
+# 2. SEARCH FUNCTION – using `search` parameter (full‑text)
 # ============================================================
 
-def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200, 
+def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page=200,
                                 session=None, sleep_between=0.1, work_types=None,
                                 just_count=False):
+    """
+    Query OpenAlex using the `search` parameter (full‑text, with stemming).
+    Filter is used only for year and work types.
+    """
     session = session or requests.Session()
     cursor = "*"
     count = 0
 
-    filter_parts = [
-        f'title_and_abstract.search:"{phrase}"',
-        f'publication_year:{year}'
-    ]
+    # Build filter string (year + work types)
+    filter_parts = [f"publication_year:{year}"]
     if work_types and "All types" not in work_types:
+        # OR‑join multiple types (e.g., type:article|type:book)
         type_filter = "|".join(work_types)
-        filter_parts.append(f'type:{type_filter}')
-    
+        filter_parts.append(f"type:{type_filter}")
     filter_string = ",".join(filter_parts)
-    
+
+    # Main parameters: `search` is the query, `filter` for year/type
     params = {
+        "search": phrase,
         "filter": filter_string,
-        "per-page": 1 if just_count else per_page
+        "per-page": 1 if just_count else per_page,
     }
-    
+
     if email:
         params["mailto"] = email
     if api_key:
         params["api_key"] = api_key
 
+    # Debug URL
     temp_params = dict(params)
     temp_params["cursor"] = "*"
     debug_url = f"{OPENALEX_URL}?{urllib.parse.urlencode(temp_params)}"
@@ -139,7 +144,7 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
 
             for work in data.get("results", []):
                 results.append(normalize_work(work))
-            
+
             cursor = (data.get("meta", {}) or {}).get("next_cursor")
             if not data.get("results"):
                 break
@@ -147,18 +152,18 @@ def search_openalex_phrase_year(phrase, year, email=None, api_key=None, per_page
         return results, first_page_meta_count, debug_url
 
 # ============================================================
-# 3. COLLECT FUNCTION
+# 3. COLLECT FUNCTION – unchanged (works with new signature)
 # ============================================================
 
-def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_types=None, 
+def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_types=None,
             fetch_fn=search_openalex_phrase_year):
     by_year = {y: {} for y in years}
     debug_info = {}
-    
+
     for year in years:
         for phrase in phrases:
             rows, count, debug_url = fetch_fn(
-                phrase, year, email=email, api_key=api_key, 
+                phrase, year, email=email, api_key=api_key,
                 sleep_between=sleep_between, work_types=work_types,
                 just_count=False
             )
@@ -179,7 +184,7 @@ def collect(phrases, years, email=None, api_key=None, sleep_between=0.1, work_ty
     return {year: list(rows.values()) for year, rows in by_year.items()}, debug_info
 
 # ============================================================
-# 4. EXPORT FUNCTIONS – with CSV and Excel (table formatting)
+# 4. EXPORT FUNCTIONS – unchanged
 # ============================================================
 
 def sanitize_for_excel(value):
@@ -302,7 +307,6 @@ def export_to_csv_bytes(merged_rows):
             "Matched Phrases": "; ".join(r.get("matched_phrases", []))
         })
     df = pd.DataFrame(data)
-    # Sort by year then title
     df = df.sort_values(["Year", "Title"]).reset_index(drop=True)
     out = StringIO()
     df.to_csv(out, index=False)
@@ -322,12 +326,11 @@ def get_total_count(phrases, years, email, api_key, work_types, fetch_fn):
     return total
 
 # ============================================================
-# 6. STREAMLIT UI
+# 6. STREAMLIT UI – unchanged (keeps all your existing UI)
 # ============================================================
 
 st.set_page_config(page_title="LitFind", layout="wide")
 
-# ---- Custom CSS for top padding (optional) ----
 st.markdown(
     """
     <style>
@@ -344,7 +347,6 @@ if not api_key:
     st.error("🚨 **API Key Missing!** Please add OPENALEX_API_KEY to your secrets.")
     st.stop()
 
-# ---- New custom header with SVG logo ----
 st.markdown(
     """
     <div style="display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.2rem;">
@@ -361,39 +363,39 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
 st.markdown("Search for scholarly works using **OpenAlex**. Enter your search phrases and years to find relevant publications – abstracts, authors, journals and PDF links are all included.")
 
 with st.expander("ℹ️ About this search tool", expanded=False):
     st.markdown("""
     This tool searches **OpenAlex** – a free, open index of the world's research ecosystem.
-    
+
     **What does OpenAlex cover?**
     - Over **320 million scholarly works**: journal articles, conference papers, books, book chapters, datasets, dissertations, preprints, and more
     - **Extra coverage** of humanities, non‑English languages, and the Global South
     - Data from **Crossref, PubMed, arXiv, HAL, DOAJ, ORCID, institutional repositories**, and many other sources
     - **60 million open access PDFs** parsed directly
-    
+
     **Why OpenAlex?**
     - It is **free and open** – no paywalls, no API keys required (though providing your email gives you faster "polite pool" access)
     - It is **more comprehensive** than Scopus or Web of Science, with over 464 million works indexed
     - It includes **datasets, software, and other research objects** beyond just traditional publications
-    
+
     **Search tips:**
     - Use **uppercase** `AND`, `OR`, `NOT` for boolean logic
     - Use **double quotes** for exact phrase matches (e.g., `"climate change"`)
     - **Parentheses** group terms (e.g., `(neural OR deep)`)
+    - Field‑specific syntax: `title:"blended learning"`, `author:"Smith"`, `journal:"Nature"`
     - Non‑ASCII characters (e.g., 守破離) are fully supported
     - You can filter results by document type using the dropdown below
-    
-    ⚠️ **Cache & Rate limits:** 
-    - The app caches results to speed up repeated searches. 
+
+    ⚠️ **Cache & Rate limits:**
+    - The app caches results to speed up repeated searches.
     - If you are getting **0 results unexpectedly**, check the **"Force Refresh"** box below and search again.
-    
+
     🛡️ **Pre‑flight check:** The app first counts how many works match your search. If the count exceeds 2000, it warns you to narrow your search to avoid excessive API calls. You can still force a full fetch if needed.
-    
+
     ℹ️ **Session‑only storage**: Your email and search history are stored **only in your current browser session**. If you close this tab or refresh the page, they will be cleared. No data is stored on any server or shared with anyone.
-    
+
     🔄 **How selection works**: Each search has its own preview table with **Include** checkboxes. After marking rows, click the **"Apply Selected Records"** button below all tables. This collects all included rows from all searches, removes duplicates, and builds a download list. You can later refine any search's selections and re‑apply.
     """)
 
@@ -416,7 +418,7 @@ with st.form("search_form"):
         phrases_input = st.text_area(
             "🔍 Search Phrases",
             value='"epistemic cognition" AND EFL',
-            help="Each line is a separate query."
+            help="Each line is a separate query. Use boolean operators and field prefixes like title:, author:, journal:"
         )
         start_year = st.number_input("Start Year", min_value=1900, max_value=2030, value=2020, step=1)
         end_year = st.number_input("End Year", min_value=1900, max_value=2030, value=2026, step=1)
@@ -428,7 +430,7 @@ with st.form("search_form"):
             help="Optional, but using a real email gives you 10x more daily searches."
         )
         st.caption("**Providing an email is optional** – without it, you'll have a lower daily quota.")
-        work_type_options = ["All types", "article", "book", "book-chapter", "dataset", 
+        work_type_options = ["All types", "article", "book", "book-chapter", "dataset",
                              "dissertation", "preprint", "conference-paper", "conference-abstract",
                              "book-review", "report", "editorial", "letter", "erratum"]
         work_types = st.multiselect(
@@ -567,7 +569,7 @@ if st.session_state.search_sessions:
                 height=400,
                 column_config={
                     "Include": st.column_config.CheckboxColumn(
-                        "Include", 
+                        "Include",
                         width=80,
                         help="Check to include this row in the download list"
                     ),
@@ -576,7 +578,7 @@ if st.session_state.search_sessions:
                     "Authors": st.column_config.TextColumn("Authors", width="medium"),
                     "Journal": st.column_config.TextColumn("Journal", width="medium"),
                     "Abstract": st.column_config.TextColumn(
-                        "Abstract (double click to expand)", 
+                        "Abstract (double click to expand)",
                         width="large",
                         disabled=False
                     ),
